@@ -1,0 +1,19 @@
+{
+  "name": "sports-predictor",
+  "version": "1.0.0",
+  "description": "Multi-sport game predictor: Elo, scoring (Poisson/Normal) and machine-learning models, compared against betting markets, ESPN analytics and Gemini AI expert research.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "^2.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  }
+}

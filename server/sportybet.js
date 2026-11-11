@@ -133,6 +133,8 @@ async function fetchUpcomingPage(sportId = 'sr:sport:1', marketIds = SOCCER_BULK
       out.push({
         eventId: ev.eventId,
         gameId: ev.gameId,
+        homeTeamId: ev.homeTeamId,
+        awayTeamId: ev.awayTeamId,
         homeTeamName: ev.homeTeamName,
         awayTeamName: ev.awayTeamName,
         homeTeamIcon: ev.homeTeamIcon,
@@ -1202,11 +1204,14 @@ export async function resolveSportySelection(item) {
  * Generate a REAL 6-character SportyBet Ghana Booking Code (`shareCode`) by posting selections
  * to `https://www.sportybet.com/api/gh/orders/share`.
  */
+export const SPORTY_MAX_GAMES = 50;
+
 export async function generateSportyBookingCode(items = []) {
   const validSelections = [];
   const seenKeys = new Set();
 
   for (const item of items) {
+    if (validSelections.length >= SPORTY_MAX_GAMES) break;
     const sel = await resolveSportySelection(item);
     if (sel?.eventId && sel?.marketId && sel?.outcomeId) {
       const k = `${sel.eventId}:${sel.marketId}:${sel.specifier || ''}:${sel.outcomeId}`;

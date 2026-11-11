@@ -146,27 +146,38 @@ function saveSlip() {
   });
 }
 
+const SPORTY_MAX_SLIP = 50; // SportyBet Ghana strict 50-game betslip limit
+
 function addToSlip(item, forceAdd = false) {
   const idx = state.slip.findIndex((s) => s.id === item.id);
   if (idx >= 0 && !forceAdd) {
     state.slip.splice(idx, 1);
     showToast(`Removed ${item.sportyPick || item.label} from Slip`, 'info');
   } else if (idx < 0) {
+    if (state.slip.length >= SPORTY_MAX_SLIP) {
+      showToast(`⚠️ SportyBet Ghana caps betslips at ${SPORTY_MAX_SLIP} games! Remove a leg or book this 50-game slip first.`, 'err');
+      return;
+    }
     state.slip.push({
       ...item,
       fairOdds: item.fairOdds || +(1 / Math.max(item.p || 0.5, 1e-4)).toFixed(2),
       userOdds: item.userOdds || item.sportyOdds || null,
       addedAt: new Date().toISOString(),
     });
-    showToast(`✓ Added ${item.sportyPick || item.label} (@${item.sportyOdds || item.fairOdds || ''}) to Slip`, 'ok');
+    showToast(`✓ Added ${item.sportyPick || item.label} (@${item.sportyOdds || item.fairOdds || ''}) to Slip (${state.slip.length}/${SPORTY_MAX_SLIP})`, 'ok');
   }
   saveSlip();
 }
 
 function loadTicketIntoSlip(legs, append = false, preBookedCode = null) {
   if (!append) state.slip = [];
+  let skippedCap = 0;
   legs.forEach((leg) => {
     if (!state.slip.some((s) => s.id === leg.id)) {
+      if (state.slip.length >= SPORTY_MAX_SLIP) {
+        skippedCap++;
+        return;
+      }
       state.slip.push({
         ...leg,
         fairOdds: leg.fairOdds || +(1 / Math.max(leg.p || 0.5, 1e-4)).toFixed(2),
@@ -176,7 +187,7 @@ function loadTicketIntoSlip(legs, append = false, preBookedCode = null) {
     }
   });
   saveSlip();
-  if (!append && preBookedCode) {
+  if (!append && preBookedCode && skippedCap === 0) {
     state.activeSlipCode = {
       shareCode: preBookedCode,
       shareURL: `https://www.sportybet.com/gh/?shareCode=${preBookedCode}`,
@@ -185,12 +196,16 @@ function loadTicketIntoSlip(legs, append = false, preBookedCode = null) {
   }
   state.slipDrawerTab = 'slip';
   openSlip();
-  showToast(
-    append
-      ? `Stacked ${legs.length} picks onto your active Slip (${state.slip.length} total)`
-      : `Loaded ${legs.length}-Fold Slip${preBookedCode ? ` (Code: ${preBookedCode})` : ''}`,
-    'ok'
-  );
+  if (skippedCap > 0) {
+    showToast(`Loaded up to SportyBet Ghana's ${SPORTY_MAX_SLIP}-game limit (${skippedCap} extra skipped)`, 'info');
+  } else {
+    showToast(
+      append
+        ? `Stacked ${legs.length} picks onto your active Slip (${state.slip.length}/${SPORTY_MAX_SLIP} games)`
+        : `Loaded ${state.slip.length}-Game Slip${preBookedCode ? ` (Code: ${preBookedCode})` : ''}`,
+      'ok'
+    );
+  }
 }
 
 function removeFromSlip(id) {
@@ -216,11 +231,15 @@ function clearSlip() {
 async function ensureSlipVaultLoaded() {
   if (state.slipVault) return state.slipVault;
   try {
+    if (state.slip.length > SPORTY_MAX_SLIP) {
+      state.slip = state.slip.slice(0, SPORTY_MAX_SLIP);
+      localStorage.setItem('oracle_betslip', JSON.stringify(state.slip));
+      updateSlipBadge();
+    }
     state.slipVault = await api('/api/slip-vault');
-    // If user's slip has never been populated, auto-preload the Vhim Banker slip so Slip Centre is never empty!
     if (!state.slip.length && !sessionStorage.getItem('oracle_slip_initialized') && state.slipVault?.defaultSlip?.length) {
       sessionStorage.setItem('oracle_slip_initialized', '1');
-      state.slip = state.slipVault.defaultSlip.map((leg) => ({
+      state.slip = state.slipVault.defaultSlip.slice(0, SPORTY_MAX_SLIP).map((leg) => ({
         ...leg,
         userOdds: leg.sportyOdds || leg.fairOdds,
       }));
@@ -240,25 +259,36 @@ async function ensureSlipVaultLoaded() {
 }
 
 async function openSlip() {
-  $('#slip-backdrop').hidden = false;
-  $('#slip-drawer').hidden = false;
+  const bd = $('#slip-backdrop');
+  const dr = $('#slip-drawer');
+  if (bd) { bd.hidden = false; bd.removeAttribute('hidden'); }
+  if (dr) { dr.hidden = false; dr.removeAttribute('hidden'); }
   renderSlip();
   if (!state.slipVault) {
     await ensureSlipVaultLoaded();
-    if (!$('#slip-drawer').hidden) renderSlip();
+    if (dr && !dr.hidden) renderSlip();
   }
 }
 
 function closeSlip() {
-  $('#slip-backdrop').hidden = true;
-  $('#slip-drawer').hidden = true;
+  const bd = $('#slip-backdrop');
+  const dr = $('#slip-drawer');
+  if (bd) { bd.hidden = true; bd.setAttribute('hidden', ''); }
+  if (dr) { dr.hidden = true; dr.setAttribute('hidden', ''); }
 }
 
-$('#open-slip')?.addEventListener('click', openSlip);
-$('#close-slip')?.addEventListener('click', closeSlip);
-$('#slip-backdrop')?.addEventListener('click', closeSlip);
+$('#open-slip')?.addEventListener('click', () => {
+  const dr = $('#slip-drawer');
+  if (dr && !dr.hidden) closeSlip();
+  else openSlip();
+});
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#close-slip') || e.target.closest('[data-close-slip]') || e.target.id === 'slip-backdrop') {
+    closeSlip();
+  }
+});
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('#slip-drawer').hidden) closeSlip();
+  if (e.key === 'Escape' && !$('#slip-drawer')?.hidden) closeSlip();
 });
 
 async function copyCodeString(code, btnEl) {
@@ -555,12 +585,13 @@ function renderSlip() {
             <div class="slip-item-title">${idx + 1}. ${esc(s.matchup)}</div>
             <div class="slip-item-meta">${esc(s.leagueName || s.league || '')} · ${esc(s.sportyMarket || s.market)}</div>
           </div>
-          <button class="close" style="width:1.6rem;height:1.6rem;font-size:.9rem" onclick="window.oracleRemoveSlip('${esc(s.id)}')" aria-label="Remove pick">✕</button>
+          <button type="button" class="close" style="width:1.6rem;height:1.6rem;font-size:.9rem" onclick="window.oracleRemoveSlip('${esc(s.id)}')" aria-label="Remove pick">✕</button>
         </div>
         <div class="slip-pick-row">
           <span class="slip-pick-name">${esc(s.sportyPick || s.label)}</span>
           <span class="slip-pick-prob">Win Prob: <b>${pct(s.p)}</b> (Fair: @${s.fairOdds})</span>
         </div>
+        ${s.historySummary || s.historyBadge ? `<div class="small muted" style="font-size:.73rem;line-height:1.3">📜 ${esc(s.historySummary || s.historyBadge)}</div>` : ''}
         <div class="slip-odds-row">
           <label class="small muted">SportyBet Odds:
             <input type="number" step="0.01" min="1.01" placeholder="@ ${s.sportyOdds || s.fairOdds}" value="${s.userOdds || s.sportyOdds || ''}" onchange="window.oracleUpdateOdds('${esc(s.id)}', this.value)">
@@ -571,40 +602,45 @@ function renderSlip() {
   }).join('');
 
   const combP = state.slip.reduce((a, b) => a * (b.p || 0.5), 1);
-  const combFair = 1 / Math.max(combP, 1e-8);
+  const combFair = 1 / Math.max(combP, 1e-10);
   const totalSporty = state.slip.reduce((a, b) => a * (b.userOdds || b.sportyOdds || b.fairOdds || 1.4), 1);
   const stake = Number(state.slipStake) || 10;
   const estPayout = stake * totalSporty;
+  const fmtPayout = estPayout >= 1e6
+    ? `${(estPayout / 1e6).toFixed(2)}M (${Math.round(estPayout).toLocaleString()})`
+    : estPayout.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   c.innerHTML = `
     ${tabsNav}
-    ${ state.activeSlipCode?.shareCode ? renderSportyCodeBanner(state.activeSlipCode.shareCode, state.activeSlipCode.shareURL, state.slip.length) : `
-      <button id="book-sporty-btn" class="btn btn-sporty" style="width:100%;justify-content:center;padding:.65rem;margin-bottom:.65rem;font-size:.9rem" onclick="window.oracleBookActiveSlip()">
-        🇬🇭 Generate Live SportyBet Ghana Code (${state.slip.length} Picks)
+    ${ state.activeSlipCode?.shareCode ? renderSportyCodeBanner(state.activeSlipCode.shareCode, state.activeSlipCode.shareURL, state.slip.length, fmtOdds(totalSporty)) : `
+      <button type="button" id="book-sporty-btn" class="btn btn-sporty" style="width:100%;justify-content:center;padding:.65rem;margin-bottom:.65rem;font-size:.9rem" onclick="window.oracleBookActiveSlip()">
+        🇬🇭 Generate Live SportyBet Ghana Code (${state.slip.length}/${SPORTY_MAX_SLIP} Games)
       </button>` }
     ${multiSameGameCount > 0 ? `<div class="slip-warn">⚡ <b>Multi-Additions Active (${multiSameGameCount} match${multiSameGameCount > 1 ? 'es' : ''} with multiple picks)</b>: SportyBet will book all selections into your code for BetBuilder, Singles, or System/Flex play.</div>` : ''}
     <div style="display:grid;gap:.55rem;max-height:340px;overflow-y:auto;padding-right:.2rem">${itemsHtml}</div>
     <div class="slip-summary" style="margin-top:.75rem">
-      <div class="slip-summary-row"><span>Total Selections (Folds):</span><b>${state.slip.length}</b></div>
-      <div class="slip-summary-row"><span>Combined Win Probability:</span><b>${pct1(combP)}</b></div>
-      <div class="slip-summary-row"><span>Combined Fair Odds:</span><b>@ ${combFair.toFixed(2)}</b></div>
-      <div class="slip-summary-row" style="color:var(--brand);font-size:1rem"><span>Total SportyBet Odds:</span><b>@ ${totalSporty.toFixed(2)}</b></div>
+      <div class="slip-summary-row"><span>Total Games (SportyBet Max 50):</span><b>${state.slip.length} / ${SPORTY_MAX_SLIP}</b></div>
+      <div class="slip-summary-row"><span>Combined Win Probability:</span><b>${combP < 0.001 ? `${(combP * 100).toExponential(2)}%` : pct1(combP)}</b></div>
+      <div class="slip-summary-row"><span>Combined Fair Odds:</span><b>@ ${fmtOdds(combFair)}</b></div>
+      <div class="slip-summary-row" style="color:var(--brand);font-size:1rem"><span>Total SportyBet Odds:</span><b>@ ${fmtOdds(totalSporty)}</b></div>
       <div class="slip-summary-row" style="align-items:center">
         <span>Stake (GHS ₵):</span>
         <input type="number" min="1" step="5" value="${stake}" style="width:80px;padding:.25rem .45rem;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);text-align:right;font-weight:700" onchange="window.oracleUpdateStake(this.value)">
       </div>
       <div class="slip-summary-row" style="color:var(--good);font-size:1.05rem">
         <span>Potential Return:</span>
-        <b>GHS ₵ ${estPayout.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>
+        <b>GHS ₵ ${fmtPayout}</b>
       </div>
-      <div class="slip-actions">
-        <button id="copy-slip-btn" class="btn primary" onclick="window.oracleCopySlip()">📋 Copy Slip & Code</button>
-        <button class="btn" onclick="window.oracleClearSlip()">Clear</button>
+      <div class="slip-actions" style="grid-template-columns:1fr auto auto">
+        <button type="button" id="copy-slip-btn" class="btn primary" onclick="window.oracleCopySlip()">📋 Copy Slip &amp; Code</button>
+        <button type="button" class="btn" onclick="window.oracleClearSlip()">Clear</button>
+        <button type="button" class="btn" data-close-slip="1" onclick="window.oracleCloseSlip()">✕ Close</button>
       </div>
     </div>`;
 }
 
 // Global hooks for inline event handlers
+window.oracleCloseSlip = closeSlip;
 window.oracleRemoveSlip = removeFromSlip;
 window.oracleUpdateOdds = updateSlipOdds;
 window.oracleClearSlip = clearSlip;
@@ -1103,14 +1139,14 @@ function renderFlexDirectiveBanner(fd, legs = []) {
   const n = legs.length;
   let podBtnsHtml = '';
   if (n >= 24) {
-    const podSize = n >= 42 ? 15 : 10;
-    const numPods = Math.min(4, Math.ceil(n / podSize));
+    const numPods = n >= 36 ? 4 : 3;
+    const podSize = Math.ceil(n / numPods);
     const btns = [];
     for (let p = 0; p < numPods; p++) {
       const slice = legs.slice(p * podSize, (p + 1) * podSize);
       if (slice.length < 2) continue;
       const sliceJson = JSON.stringify(slice).replace(/"/g, '&quot;');
-      btns.push(`<button type="button" class="btn" style="padding:.22rem .5rem;font-size:.72rem" onclick="window.oracleLoadTicket(${sliceJson}, false, null)">✂️ Load Pod #${p + 1} (${slice.length} Legs)</button>`);
+      btns.push(`<button type="button" class="btn" style="padding:.22rem .5rem;font-size:.72rem" onclick="window.oracleLoadTicket(${sliceJson}, false, null)">✂️ Load Pod #${p + 1} (${slice.length} Games)</button>`);
     }
     if (btns.length > 1) {
       podBtnsHtml = `<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.25rem">${btns.join('')}</div>`;
@@ -1139,9 +1175,10 @@ function renderTicketCard(t, highlight = false) {
   const legsHtml = (t.legs || []).map((leg, i) => {
     const evTag = (leg.edgePct || 0) >= 2.0 ? `<span class="tag value" style="font-size:.66rem;padding:.08rem .35rem">+${leg.edgePct}% EV</span>` : '';
     const steamTag = (leg.steamPct || 0) >= 4.0 ? `<span class="tag ok" style="font-size:.66rem;padding:.08rem .35rem">📉 Steam</span>` : '';
+    const histLine = leg.historySummary || leg.historyBadge;
     return `
-      <div class="ticket-leg">
-        <span style="flex:1.25;min-width:0">
+      <div class="ticket-leg" style="flex-wrap:wrap">
+        <span style="flex:1.25;min-width:185px">
           <b>${i + 1}.</b>
           <span class="small muted">${esc(leg.leagueName || leg.league)}:</span>
           ${esc(leg.matchup)}
@@ -1152,6 +1189,7 @@ function renderTicketCard(t, highlight = false) {
           ${evTag}${steamTag}
         </span>
         <span class="leg-odds">@${leg.sportyOdds || leg.fairOdds}</span>
+        ${histLine ? `<div style="flex-basis:100%;font-size:.7rem;color:var(--muted);padding-left:1rem;margin-top:.1rem">📜 ${esc(histLine)}</div>` : ''}
       </div>`;
   }).join('');
 
@@ -1164,6 +1202,7 @@ function renderTicketCard(t, highlight = false) {
     ? `${(rawWin / 1e6).toFixed(2)}M (${Math.round(rawWin).toLocaleString()})`
     : rawWin.toLocaleString(undefined, { minimumFractionDigits: rawWin >= 1000 ? 0 : 2, maximumFractionDigits: rawWin >= 1000 ? 0 : 2 });
   const kickoffRel = t.earliestKickoff ? fmtKickoffRelative(t.earliestKickoff) : '';
+  const histCount = (t.legs || []).filter((l) => l.historyVerified || l.historySummary || l.historyBadge).length;
 
   return `
     <div class="ticket-card" style="${highlight ? 'border:2px solid var(--brand)' : ''}">
@@ -1172,11 +1211,12 @@ function renderTicketCard(t, highlight = false) {
           <h3>${esc(t.title)}</h3>
           <p class="ticket-desc">${esc(t.description || '')}</p>
         </div>
-        <span class="tag ${t.shareCode ? 'ok' : 'pick'}">${esc(t.category || `${t.count} Folds`)}</span>
+        <span class="tag ${t.shareCode ? 'ok' : 'pick'}">${esc(t.category || `${t.count} Games`)}</span>
       </div>
 
       <div class="ticket-meta-strip">
         ${kickoffRel ? `<span class="tag">⏱ ${esc(kickoffRel)}</span>` : ''}
+        ${histCount > 0 ? `<span class="tag ok">📜 ${histCount}/${t.count} History &amp; H2H Verified</span>` : ''}
         ${t.playAdvice ? `<span class="tag pick">💡 ${esc(t.playAdvice)}</span>` : ''}
         ${t.avgEdgePct != null && t.avgEdgePct > 0 ? `<span class="tag value">+${t.avgEdgePct}% Avg Edge</span>` : ''}
         ${t.recommendedBankrollPct ? `<span class="tag muted">Kelly Stake: ${t.recommendedBankrollPct}%</span>` : ''}
@@ -1187,7 +1227,7 @@ function renderTicketCard(t, highlight = false) {
       ${renderSportyCodeBanner(t.shareCode, t.shareURL, t.count, fmtOdds(totalOdds))}
 
       <div class="ticket-stats">
-        <div><span>Folds: </span><b>${t.count}</b></div>
+        <div><span>Games: </span><b>${t.count} / 50</b></div>
         <div><span>Sporty Odds: </span><b>@ ${fmtOdds(totalOdds)}</b></div>
         <div><span>₵${stakeSample} Pays: </span><b style="color:var(--good)">₵${estReturnSample}</b></div>
       </div>
@@ -1208,7 +1248,7 @@ function renderCommandHero(ov) {
   if (!ov) return '';
   const roll = ov.rolloverTicket;
   const fast = ov.fastCashTicket;
-  const mill = ov.millionTicket;
+  const mill = ov.twentyMillionTicket || ov.millionTicket;
   const as = ov.arenaSummary;
   const anom = ov.topAnomaly;
 
@@ -1225,7 +1265,7 @@ function renderCommandHero(ov) {
         </div>
         ${roll ? `
           <div class="hero-big" style="color:var(--good)">Code: ${esc(roll.shareCode || 'LIVE')} <span style="font-size:.95rem;color:var(--text)">· @${fmtOdds(roll.totalSportyOdds)}</span></div>
-          <div class="small muted">${roll.count} ultra-safe legs · Avg prob ${pct(roll.legs?.reduce((s, l) => s + (l.p || 0.8), 0) / Math.max(roll.count || 1, 1))} · Straight Play</div>
+          <div class="small muted">${roll.count} history-verified legs · Avg prob ${pct(roll.legs?.reduce((s, l) => s + (l.p || 0.8), 0) / Math.max(roll.count || 1, 1))} · Straight Play</div>
           <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:auto">
             ${roll.shareCode ? `<button class="btn" style="padding:.32rem .6rem;font-size:.78rem" onclick="window.oracleCopyCode('${esc(roll.shareCode)}', this)">📋 Copy ${esc(roll.shareCode)}</button>` : ''}
             ${roll.shareURL ? `<a class="btn btn-sporty" style="padding:.32rem .65rem;font-size:.78rem" href="${esc(roll.shareURL)}" target="_blank" rel="noopener">🚀 Load</a>` : ''}
@@ -1236,18 +1276,18 @@ function renderCommandHero(ov) {
 
       <div class="hero-card million">
         <div class="hero-kicker">
-          <span>👑 Million-Odds Multi-Match</span>
-          <span>${mill ? `${mill.count} High-Acc Folds` : '50+ Folds'}</span>
+          <span>👑 20-Million+ (50-Game Max)</span>
+          <span>${mill ? `${mill.count}/50 Games` : 'Max 50 Games'}</span>
         </div>
         ${mill ? `
           <div class="hero-big" style="color:#a855f7">Code: ${esc(mill.shareCode || 'LIVE')} <span style="font-size:.92rem;color:var(--text)">· @${fmtOdds(mill.totalSportyOdds)}</span></div>
-          <div class="small muted">Avg leg accuracy <b>${pct(mill.avgLegProb || 0.72)}</b> · 🛡️ <b>MUST FLEX (Cut-3/Cut-5)</b></div>
+          <div class="small muted">History &amp; H2H Verified · Avg <b>${pct(mill.avgLegProb || 0.72)}</b> · 🛡️ <b>MUST FLEX</b></div>
           <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:auto">
             ${mill.shareCode ? `<button class="btn" style="padding:.32rem .6rem;font-size:.78rem" onclick="window.oracleCopyCode('${esc(mill.shareCode)}', this)">📋 Copy ${esc(mill.shareCode)}</button>` : ''}
-            ${mill.shareURL ? `<a class="btn btn-sporty" style="padding:.32rem .65rem;font-size:.78rem" href="${esc(mill.shareURL)}" target="_blank" rel="noopener">🚀 Load 1M+</a>` : ''}
+            ${mill.shareURL ? `<a class="btn btn-sporty" style="padding:.32rem .65rem;font-size:.78rem" href="${esc(mill.shareURL)}" target="_blank" rel="noopener">🚀 Load 20M+</a>` : ''}
             <button class="btn" style="padding:.32rem .55rem;font-size:.78rem" onclick="window.oracleLoadTicket(${millLegsJson}, false, '${esc(mill.shareCode || '')}')">📥 Slip</button>
           </div>
-        ` : '<div class="small muted">Compounding 50+ high-accuracy matches…</div>'}
+        ` : '<div class="small muted">Compounding 50 history-verified matches…</div>'}
       </div>
 
       <div class="hero-card fastcash">
@@ -1339,7 +1379,7 @@ function renderRolloverPlanner(rolloverTicket) {
 async function renderTickets() {
   const main = $('#main');
   const win = state.ticketsTimeWindow || 'all';
-  main.innerHTML = `<p class="loading"><span class="spinner"></span> Connecting to SportyBet Ghana &amp; cooking High-Accuracy Multi-Match Accumulators (up to 60 Folds &amp; 1,000,000x+ Odds) + Flex Directives…</p>`;
+  main.innerHTML = `<p class="loading"><span class="spinner"></span> Checking team Last-15 form &amp; H2H history across SportyBet Ghana fixtures &amp; cooking Multi-Match Accumulators (strictly ≤ 50 Games · up to 20,000,000x+ Odds)…</p>`;
 
   try {
     const [data, overview] = await Promise.all([
@@ -1354,7 +1394,7 @@ async function renderTickets() {
 
     const matchTicketCategory = (t, cat) => {
       if (cat === 'rollover') return ['Rollover Banker', 'Fast Cash'].includes(t.category);
-      if (cat === 'million') return t.category === 'Multi-Match & 1M+' || t.ticketType === 'million' || (t.count || 0) >= 25;
+      if (cat === 'million') return t.category === 'Multi-Match & 1M+' || t.category === 'Multi-Match & 20M+' || t.ticketType === 'million' || (t.count || 0) >= 25;
       if (cat === 'props') return t.category === 'Tactical Props' || t.ticketType === 'props' || t.id === 'identical-stats-8';
       if (cat === 'vhim') return ['Vhim Banker', 'Mega 20-Fold'].includes(t.category);
       if (cat === 'ev') return ['Positive EV', 'Correlated SGM'].includes(t.category) || t.id === 'value-ev-sniper-6' || t.id === 'correlated-sgm-6';
@@ -1375,15 +1415,16 @@ async function renderTickets() {
     });
 
     const rolloverTicket = allTickets.find((t) => t.id === 'daily-rollover-2x') || overview?.rolloverTicket || allTickets[0];
+    const featuredIds = ['daily-rollover-2x', 'twenty-million-mega-50', 'million-odds-grand-slam', 'value-ev-sniper-6'];
     const curatedHtml = filtered.length
-      ? filtered.map((t) => renderTicketCard(t, ['daily-rollover-2x', 'million-odds-grand-slam', 'value-ev-sniper-6'].includes(t.id))).join('')
+      ? filtered.map((t) => renderTicketCard(t, featuredIds.includes(t.id))).join('')
       : `<p class="empty">No tickets match "${esc(state.ticketSearch)}". Clear the search or switch category.</p>`;
 
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
         <div>
-          <h2 style="margin:0">🤖 Oracle Command Center — Multi-Match AI Tickets, Flex Directives &amp; Million-Odds Codes</h2>
-          <p class="muted" style="margin:.25rem 0">High-accuracy multi-match compounding from <b>2.00x Daily Rollovers</b> up to <b>60-Fold 1,000,000x+ Vhim Grand Slams</b> — with exact Poisson-Binomial <b>SportyBet Flex (Cut-1/Cut-2/Cut-3+) Directives</b> so you know when to play Straight vs Flex.</p>
+          <h2 style="margin:0">🤖 Oracle Command Center — History-Verified Multi-Match AI Tickets &amp; 20M+ Codes</h2>
+          <p class="muted" style="margin:.25rem 0">Every match is checked against real <b>Last-15 Form, Venue Splits &amp; Head-to-Head (H2H) History</b> before selection — compounding from <b>2.00x Rollovers</b> up to <b>20,000,000x+ (20M+) within SportyBet's 50-Game Limit</b>.</p>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
           <a href="#/props" class="btn" style="border-color:var(--brand);color:var(--brand);font-weight:700;text-decoration:none">🥅 Throws, Goal Kicks &amp; Shots →</a>
@@ -1400,8 +1441,8 @@ async function renderTickets() {
       <div class="generator-box">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
           <div>
-            <h3 style="margin:0;font-size:1.08rem">⚡ Multi-Match &amp; Million-Odds Synthesizer (2 to 60 Folds · Up to 1,000,000x+ Odds + Live Code)</h3>
-            <span class="small muted">Strictly selects high-accuracy picks per match and automatically calculates your exact <b>SportyBet Flex / Cut-X Directive</b> + Pod Splits.</span>
+            <h3 style="margin:0;font-size:1.08rem">⚡ Multi-Match &amp; 20-Million+ Synthesizer (2 to 50 Games SportyBet Max · Up to 20,000,000x+ Odds + Live Code)</h3>
+            <span class="small muted">Vets team Last-15 form &amp; direct H2H history first, enforces SportyBet Ghana's <b>50-Game maximum</b>, and computes your exact <b>Flex / Cut-X Directive</b> + Pod Splits.</span>
           </div>
           <button id="run-gen-btn" class="btn btn-sporty" style="padding:.6rem 1.1rem">🇬🇭 Synthesize &amp; Book SportyBet Code</button>
         </div>
@@ -1422,7 +1463,7 @@ async function renderTickets() {
           <span class="small" style="font-weight:700;min-width:130px">Target Multiplier:</span>
           <div class="filters" role="group">
             ${[
-              [0, '🔢 Use Fold Count Below'],
+              [0, '🔢 Use Game Count Below'],
               [2, '💰 ~2x Rollover'],
               [5, '🎯 ~5x'],
               [10, '🔥 ~10x'],
@@ -1431,16 +1472,19 @@ async function renderTickets() {
               [1000, '⚡ ~1,000x'],
               [10000, '🌟 ~10,000x'],
               [100000, '🏆 ~100,000x'],
-              [1000000, '👑 1,000,000x (1M+)'],
+              [1000000, '🔥 1,000,000x (1M+)'],
+              [5000000, '🚀 5,000,000x (5M+)'],
+              [10000000, '💎 10,000,000x (10M+)'],
+              [20000000, '👑 20,000,000x+ (20M+ Mega)'],
             ].map(([val, lbl]) => `<button type="button" class="chip" data-target-odds="${val}" aria-pressed="${(state.ticketGenTargetOdds || 0) === val}">${lbl}</button>`).join('')}
           </div>
         </div>
 
         ${!(state.ticketGenTargetOdds > 0) ? `
           <div class="gen-row">
-            <span class="small" style="font-weight:700;min-width:130px">Number of Folds:</span>
+            <span class="small" style="font-weight:700;min-width:130px">Number of Games:</span>
             <div class="filters" role="group" id="gen-legs-group">
-              ${[2, 3, 5, 8, 10, 15, 20, 30, 40, 50, 60].map((n) => `<button type="button" class="chip" data-gen-legs="${n}" aria-pressed="${(state.ticketGenLegs || 8) === n}">${n} Folds</button>`).join('')}
+              ${[2, 3, 5, 8, 10, 15, 20, 30, 40, 50].map((n) => `<button type="button" class="chip" data-gen-legs="${Math.min(50, n)}" aria-pressed="${Math.min(50, state.ticketGenLegs || 8) === n}">${n === 50 ? '50 Games (Max)' : `${n} Games`}</button>`).join('')}
             </div>
           </div>` : ''}
 
@@ -1449,7 +1493,8 @@ async function renderTickets() {
           <div class="filters" role="group" id="gen-type-group">
             ${[
               ['mixed', '🔀 Mixed Multi (All Markets)'],
-              ['million', '👑 High-Accuracy Multi-Match Compounder'],
+              ['20m', '👑 50-Game 20M+ History-Verified Mega'],
+              ['million', '🔥 High-Accuracy 1M+ Compounder'],
               ['ou1.5', '🔁 Identical: All Over 1.5'],
               ['ou2.5', '🔁 Identical: All Over 2.5'],
               ['gg', '🔁 Identical: All GG (BTTS)'],
@@ -1494,7 +1539,7 @@ async function renderTickets() {
         <div class="filters" role="group">
           ${[
             ['all', 'All Tickets'],
-            ['million', '👑 Multi-Match & 1M+ Odds'],
+            ['million', '👑 Multi-Match, 1M+ & 20M+'],
             ['rollover', '💰 Rollover & Fast-Cash'],
             ['props', '🥅 Shots, Throws & Props'],
             ['vhim', '🔥 Vhim & 20-Fold'],
@@ -1511,9 +1556,9 @@ async function renderTickets() {
 
     // Handlers
     $('#refresh-tickets-btn')?.addEventListener('click', async () => {
-      main.innerHTML = `<p class="loading"><span class="spinner"></span> Refreshing live SportyBet Ghana fixtures &amp; booking fresh codes…</p>`;
+      main.innerHTML = `<p class="loading"><span class="spinner"></span> Refreshing live SportyBet Ghana fixtures, checking match history &amp; booking fresh codes…</p>`;
       await api(`/api/tickets?force=1&window=${encodeURIComponent(win)}`);
-      showToast('✓ Fresh SportyBet Ghana codes booked!', 'ok');
+      showToast('✓ Fresh history-verified SportyBet Ghana codes booked!', 'ok');
       renderTickets();
     });
 
@@ -1543,7 +1588,7 @@ async function renderTickets() {
       const grid = $('#curated-tickets-grid');
       if (grid) {
         grid.innerHTML = sub.length
-          ? sub.map((t) => renderTicketCard(t, ['daily-rollover-2x', 'million-odds-grand-slam', 'value-ev-sniper-6'].includes(t.id))).join('')
+          ? sub.map((t) => renderTicketCard(t, featuredIds.includes(t.id))).join('')
           : `<p class="empty">No tickets match "${esc(state.ticketSearch)}".</p>`;
       }
     });
@@ -1924,6 +1969,7 @@ async function renderPicks() {
               <div class="small muted">Fair: @${p.fairOdds || fairOdds(p.p)}</div>
             </div>
           </div>
+          ${(p.historySummary || p.historyBadge) ? `<div class="prop-rationale" style="font-size:.75rem;color:var(--good);margin-bottom:.35rem">📜 ${esc(p.historySummary || p.historyBadge)}</div>` : ''}
           <button type="button" class="btn ${inSlip ? 'primary' : ''}" data-slip-pick="${esc(pickId)}" data-slip-payload="${payload}" style="width:100%">
             <span class="sel-status">${inSlip ? '✓ In Slip' : '+ Add to Slip'}</span>
           </button>
@@ -1933,8 +1979,8 @@ async function renderPicks() {
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:.85rem">
         <div>
-          <h2 style="margin:0">⚡ Best Picks &amp; +EV Value Scanner (All Sections)</h2>
-          <p class="muted" style="margin:.25rem 0">De-vigged ensemble probabilities across 500+ live SportyBet Ghana fixtures — covering Main, Goals, Shots/SOT, Corners, Cards, Throws &amp; Fouls.</p>
+          <h2 style="margin:0">⚡ Best Picks &amp; +EV Value Scanner (History-Verified)</h2>
+          <p class="muted" style="margin:.25rem 0">De-vigged ensemble probabilities vetted against real <b>Last-15 Team Form, Venue Splits &amp; H2H History</b> across SportyBet Ghana fixtures — Main, Goals, Shots/SOT, Corners, Cards &amp; Throws.</p>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
           <a href="#/props" class="btn" style="text-decoration:none">🥅 Dedicated Throws, GK &amp; Shots Hub →</a>

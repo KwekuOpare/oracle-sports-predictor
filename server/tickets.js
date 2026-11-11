@@ -1,10 +1,11 @@
 // AI Accumulator, Rollover Compounder, Identical/Mixed Multi Synthesizer & Slip Centre Vault Engine.
-// Automatically compiles conflict-free accumulators (up to 20 folds), Daily 2.00x Rollover Bankers,
-// Kickoff-Soon Fast-Cash slips, identical single-market slips, mixed multi-market slips, correlation-aware
-// same-game multis, and a 20-game Correct Score Vault — each with a REAL 6-character SportyBet Ghana Booking Code.
+// Automatically compiles conflict-free accumulators (up to 50 folds), Daily 2.00x Rollover Bankers,
+// Kickoff-Soon Fast-Cash slips, Combo & "Or" Shield Bankers, identical single-market slips, mixed multi-market slips,
+// correlation-aware same-game multis, Pre-Booked Pod A–D Split Codes, and a 20-game Correct Score Vault —
+// each with a REAL 6-character SportyBet Ghana Booking Code, Last-15 History Vetting & Lineup/Referee/Season-Stats Veto Gate.
 
 import { getLeague } from './leagues.js';
-import { getScoreboard } from './espn.js';
+import { getScoreboard, getSummary } from './espn.js';
 import { getModel } from './engine.js';
 import {
   getSportyCatalog,
@@ -16,6 +17,7 @@ import {
 import { buildInsiderRadarTicket } from './intelligence.js';
 import { getArenaMarketWeights } from './arena.js';
 import { batchAnalyzeMatchHistory, vetSelectionWithHistory } from './history.js';
+import { batchInspectLineupsAndReferees, vetSelectionWithLineupAndReferee } from './lineups.js';
 
 const PRIORITY_ESPN_LEAGUES = [
   'eng.1', 'esp.1', 'ita.1', 'ger.1', 'fra.1',
@@ -25,16 +27,17 @@ const PRIORITY_ESPN_LEAGUES = [
 
 const curatedCacheByWindow = new Map(); // windowKey -> { ts, tickets }
 let vaultCache = { ts: 0, vault: null };
-let espnPredCache = { ts: 0, map: new Map() };
+let espnPredCache = { ts: 0, map: new Map(), summaries: new Map() };
 
 const CACHE_TTL = 8 * 60 * 1000; // 8 minutes
 const ESPN_PRED_TTL = 10 * 60 * 1000;
 
-async function getEspnPredMap() {
+async function getEspnIntelMaps() {
   if (espnPredCache.map.size > 0 && Date.now() - espnPredCache.ts < ESPN_PRED_TTL) {
-    return espnPredCache.map;
+    return espnPredCache;
   }
   const map = new Map();
+  const gameRefs = [];
   await Promise.all(PRIORITY_ESPN_LEAGUES.slice(0, 10).map(async (lid) => {
     try {
       const league = getLeague(lid);
@@ -45,12 +48,40 @@ async function getEspnPredMap() {
         if (spEv) {
           const pred = model.predict(g, { markets: true });
           map.set(spEv.eventId, pred);
+          if (league.sport === 'soccer' && g.eventId) {
+            gameRefs.push({ sportyEventId: spEv.eventId, league, espnEventId: g.eventId, startMs: spEv.estimateStartTime || Infinity });
+          }
         }
       }
     } catch { /* ignore single league hiccup */ }
   }));
-  espnPredCache = { ts: Date.now(), map };
-  return map;
+
+  // Fetch ESPN match summaries (injuries, officials, rosters) for top 20 nearest matched soccer fixtures
+  gameRefs.sort((a, b) => a.startMs - b.startMs);
+  const summaries = new Map();
+  const topRefs = gameRefs.slice(0, 20);
+  for (let i = 0; i < topRefs.length; i += 6) {
+    const slice = topRefs.slice(i, i + 6);
+    const resList = await Promise.all(
+      slice.map((r) => getSummary(r.league, r.espnEventId).catch(() => null))
+    );
+    for (let j = 0; j < slice.length; j++) {
+      if (resList[j]) summaries.set(slice[j].sportyEventId, resList[j]);
+    }
+  }
+
+  espnPredCache = { ts: Date.now(), map, summaries };
+  return espnPredCache;
+}
+
+async function getEspnPredMap() {
+  const intel = await getEspnIntelMaps();
+  return intel.map;
+}
+
+export async function getEspnSummaryForSportyEvent(eventId) {
+  const intel = await getEspnIntelMaps();
+  return intel.summaries.get(eventId) || null;
 }
 
 function filterEventsByWindow(events, timeWindow = 'all') {
@@ -80,33 +111,41 @@ function filterEventsByWindow(events, timeWindow = 'all') {
 /**
  * Collect rich, SportyBet-bookable candidate picks across upcoming SportyBet Ghana matches,
  * vetted against REAL Last-15 Team Form, Home/Away Venue Splits & Direct H2H History,
+ * Confirmed Starting Lineups, Squad Rotation, Injuries, Referee & Official Season Team Prop Stats,
  * fused with ESPN statistical model predictions, and calibrated by real-world Arena hit rates.
  */
 export async function collectCandidatePicks({ timeWindow = 'all' } = {}) {
-  const [rawCatalog, arenaWeights, espnPredMap] = await Promise.all([
+  const [rawCatalog, arenaWeights, espnIntel] = await Promise.all([
     getSportyCatalog(),
     getArenaMarketWeights().catch(() => ({})),
-    getEspnPredMap(),
+    getEspnIntelMaps(),
   ]);
+  const espnPredMap = espnIntel.map;
+  const espnSummaryMap = espnIntel.summaries;
 
   const sportyCatalog = filterEventsByWindow(rawCatalog, timeWindow);
 
-  // Prioritize marquee + multi-market fixtures for deep Last-15 Form & Direct H2H historical verification
+  // Prioritize marquee + multi-market fixtures for deep Last-15 Form, H2H & Lineup/Referee/Season-Stat verification
   const historyTargets = [...sportyCatalog].sort((a, b) => {
     const fA = espnPredMap.has(a.eventId) ? 100 : 0;
     const fB = espnPredMap.has(b.eventId) ? 100 : 0;
-    const mA = Math.min(25, a.markets?.length || 0);
-    const mB = Math.min(25, b.markets?.length || 0);
+    const mA = Math.min(35, a.markets?.length || 0);
+    const mB = Math.min(35, b.markets?.length || 0);
     return (fB + mB) - (fA + mA) || a.estimateStartTime - b.estimateStartTime;
   });
-  const historyMap = await batchAnalyzeMatchHistory(historyTargets, { maxEvents: 125, concurrency: 14 });
 
-  const byGame = new Map(); // eventId -> { event, hasModelFusion, history, selections }
+  const [historyMap, lineupMap] = await Promise.all([
+    batchAnalyzeMatchHistory(historyTargets, { maxEvents: 125, concurrency: 14 }),
+    batchInspectLineupsAndReferees(historyTargets, espnSummaryMap, { maxEvents: 55, concurrency: 8 }).catch(() => new Map()),
+  ]);
+
+  const byGame = new Map(); // eventId -> { event, hasModelFusion, history, lineupIntel, selections }
   const now = Date.now();
 
   for (const ev of sportyCatalog) {
     const modelPred = espnPredMap.get(ev.eventId) || null;
     const hist = historyMap.get(ev.eventId) || null;
+    const lineupIntel = lineupMap.get(ev.eventId) || null;
     const rawSels = extractBookableSelections(ev, modelPred);
     const hoursAway = Math.max(0, (ev.estimateStartTime - now) / 3600000);
     const freshnessBonus = hoursAway <= 8 ? 0.022 : hoursAway <= 24 ? 0.015 : hoursAway <= 48 ? 0.006 : 0;
@@ -136,7 +175,26 @@ export async function collectCandidatePicks({ timeWindow = 'all' } = {}) {
         s._histBoost = 0;
       }
 
-      // 2. Apply Arena closed-loop market calibration
+      // 2. Check Confirmed Starting XI, Squad Rotation, Key Injuries, Referee & Official Season Prop Profile!
+      if (lineupIntel) {
+        const luVet = vetSelectionWithLineupAndReferee(s, lineupIntel);
+        if (luVet.veto) continue; // Hard-reject rotated XIs, injury crises & conflicting season prop profiles!
+        if (luVet.pDelta) {
+          s.p = Math.max(0.05, Math.min(0.95, s.p + luVet.pDelta));
+        }
+        s.lineupConfirmed = Boolean(luVet.lineupConfirmed);
+        s.lineupBadge = luVet.lineupBadge || null;
+        s.lineupNote = luVet.lineupNote || null;
+        s.refereeName = luVet.refereeName || null;
+        s._histBoost += (luVet.lineupConfirmed ? 0.014 : 0) + Math.max(0, (luVet.pDelta || 0) * 0.5);
+      }
+
+      // 3. Real observed SportyBet time-series steam crash bonus
+      if (s.oddsMovement?.isSteamCrash) {
+        s._histBoost += 0.015;
+      }
+
+      // 4. Apply Arena closed-loop market calibration
       const grp = s.marketKey === '1up' || s.marketKey === '2up'
         ? '1UP / 2UP Early Payout'
         : s.marketKey === 'cs' || s.marketKey === 'multiscore'
@@ -165,6 +223,7 @@ export async function collectCandidatePicks({ timeWindow = 'all' } = {}) {
         event: ev,
         hasModelFusion: Boolean(modelPred),
         history: hist,
+        lineupIntel,
         selections: vettedSels,
       });
     }
@@ -233,11 +292,11 @@ export function computeFlexDirective(legs = [], totalSportyOdds = 1) {
     tier = 'MANDATORY_MAX_FLEX';
     needFlex = true;
     recommendedCut = n >= 40 ? 5 : 3;
-    const podSize = n >= 45 ? 15 : 10;
-    const numPods = Math.ceil(n / podSize);
-    badge = `🚨 FLEX REQUIRED: TURN ON SPORTYBET MAX-FLEX (CUT-${recommendedCut}) + ${numPods} PODS`;
+    const numPods = n >= 40 ? 4 : n >= 27 ? 3 : 2;
+    const podSize = Math.ceil(n / numPods);
+    badge = `🚨 FLEX REQUIRED: TURN ON SPORTYBET MAX-FLEX (CUT-${recommendedCut}) + ${numPods} PRE-BOOKED PODS`;
     headline = `You MUST Flex This ${n}-Fold Multi (${totalSportyOdds >= 1e6 ? `${(totalSportyOdds / 1e6).toFixed(2)}M+` : `${Math.round(totalSportyOdds).toLocaleString()}x`} Odds)`;
-    detail = `Every leg is a high-accuracy pick (${Math.round(avgLegProb * 100)}% avg), projecting ${expectedHits}/${n} hits! Across ${n} matches, 2–4 surprise upsets (red cards/VAR) are statistically normal — turn ON SportyBet Flex (Cut-3/Cut-5: ${(pCut3 * 100).toFixed(1)}%–${(pCut5 * 100).toFixed(1)}% hit zone) AND consider splitting into ${numPods} × ${podSize}-Fold Pod Slips.`;
+    detail = `Every leg is a history- & lineup-vetted pick (${Math.round(avgLegProb * 100)}% avg), projecting ${expectedHits}/${n} hits! Across ${n} matches, 2–4 surprise upsets (red cards/VAR) are statistically normal — turn ON SportyBet Flex (Cut-3/Cut-5: ${(pCut3 * 100).toFixed(1)}%–${(pCut5 * 100).toFixed(1)}% hit zone) AND play the ${numPods} pre-booked ~${podSize}-Fold Pod Codes below!`;
   } else if (n >= 10 || totalSportyOdds >= 120) {
     tier = 'FLEX_CUT2';
     needFlex = true;
@@ -271,7 +330,47 @@ export function computeFlexDirective(legs = [], totalSportyOdds = 1) {
   };
 }
 
-/** Summarize a list of legs and attach a live SportyBet Ghana Booking Code + Flex Directive + Kelly stake guidance. */
+/**
+ * Pre-book real 6-character SportyBet Ghana booking codes for 10–13 leg Split Pods (Pod A / B / C / D)
+ * on any >= 20-leg accumulator so users can immediately stake Pod insurance alongside their Flex slip.
+ */
+async function buildPreBookedPodSplits(legs = []) {
+  if (!Array.isArray(legs) || legs.length < 20) return null;
+  const numPods = legs.length >= 40 ? 4 : legs.length >= 27 ? 3 : 2;
+  const podSize = Math.ceil(legs.length / numPods);
+  const letters = ['A', 'B', 'C', 'D', 'E'];
+  const pods = [];
+
+  for (let i = 0; i < numPods; i++) {
+    const startIdx = i * podSize;
+    const podLegs = legs.slice(startIdx, startIdx + podSize);
+    if (podLegs.length < 2) continue;
+
+    const rawOdds = podLegs.reduce((acc, l) => acc * (Number(l.sportyOdds) || Number(l.fairOdds) || 1.35), 1);
+    const totalSportyOdds = rawOdds >= 1000 ? Math.round(rawOdds) : +rawOdds.toFixed(2);
+    const combP = podLegs.reduce((acc, l) => acc * (Number(l.p) || 0.65), 1);
+    const avgLegProb = +(podLegs.reduce((acc, l) => acc + (Number(l.p) || 0.65), 0) / podLegs.length).toFixed(3);
+    const podBook = await generateSportyBookingCode(podLegs).catch(() => ({ ok: false }));
+    const podId = letters[i] || String(i + 1);
+
+    pods.push({
+      podId,
+      podLabel: `Pod ${podId}`,
+      legRange: `Games ${startIdx + 1}–${startIdx + podLegs.length}`,
+      count: podLegs.length,
+      totalSportyOdds,
+      combinedProb: +combP.toFixed(5),
+      avgLegProb,
+      shareCode: podBook.shareCode || null,
+      shareURL: podBook.shareURL || null,
+      legs: podLegs,
+    });
+  }
+
+  return pods.length >= 2 ? pods : null;
+}
+
+/** Summarize a list of legs and attach a live SportyBet Ghana Booking Code + Pre-Booked Pod Codes + Flex Directive. */
 async function finalizeTicket(meta, legs) {
   const combP = legs.reduce((a, b) => a * (b.p || 0.5), 1);
   const combinedFairOdds = legs.length ? +(1 / Math.max(combP, 1e-12)).toFixed(2) : 0;
@@ -312,11 +411,18 @@ async function finalizeTicket(meta, legs) {
           : 0.25;
 
   const flexDirective = computeFlexDirective(legs, totalSportyOdds);
-  const booking = legs.length ? await generateSportyBookingCode(legs) : { ok: false };
+  const [booking, podSplits] = await Promise.all([
+    legs.length ? generateSportyBookingCode(legs) : Promise.resolve({ ok: false }),
+    !meta.skipPods && legs.length >= 20 ? buildPreBookedPodSplits(legs) : Promise.resolve(null),
+  ]);
+
+  if (flexDirective && podSplits?.length) {
+    flexDirective.podCount = podSplits.length;
+  }
 
   const playAdvice = flexDirective?.needFlex
     ? (legs.length >= 25
-      ? `MUST FLEX (Cut-${flexDirective.recommendedCut}) + Small Straight Lotto`
+      ? `MUST FLEX (Cut-${flexDirective.recommendedCut}) + ${podSplits?.length || 3} Pod Codes`
       : `Turn ON SportyBet Flex (Cut-${flexDirective.recommendedCut})`)
     : 'Play Straight Banker (No Flex Needed)';
 
@@ -333,6 +439,7 @@ async function finalizeTicket(meta, legs) {
     latestKickoff,
     recommendedBankrollPct,
     flexDirective,
+    podSplits,
     playAdvice,
     shareCode: booking.shareCode || null,
     shareURL: booking.shareURL || null,
@@ -370,7 +477,7 @@ function buildDailyRolloverLegs(byGame, targetMinOdds = 1.98, targetMaxOdds = 2.
   const safePool = [];
   for (const { event, hasModelFusion, selections } of byGame.values()) {
     const valid = selections.filter((s) =>
-      ['1up', 'dc', 'ou1.5', 'dnb', '1x2'].includes(s.marketKey) &&
+      ['1up', 'dc', 'ou1.5', 'dnb', '1x2', 'dc_ou1.5', 'home_or_o25', 'away_or_o25', 'ht_or_ft'].includes(s.marketKey) &&
       s.p >= 0.74 &&
       s.sportyOdds >= 1.24 &&
       s.sportyOdds <= 1.58
@@ -415,7 +522,7 @@ function buildFastCashSoonLegs(byGame, maxLegs = 5) {
   const candidates = [];
   for (const { event, hasModelFusion, selections } of gamesSortedByTime) {
     const valid = selections.filter((s) =>
-      ['1up', 'ou1.5', 'dc', '1x2', 'dnb', 'ou2.5'].includes(s.marketKey) &&
+      ['1up', 'ou1.5', 'dc', '1x2', 'dnb', 'ou2.5', 'dc_ou1.5', 'ht_or_ft', '1h_ou0.5'].includes(s.marketKey) &&
       s.p >= 0.68 &&
       s.sportyOdds >= 1.22 &&
       s.sportyOdds <= 1.78
@@ -435,18 +542,20 @@ function buildFastCashSoonLegs(byGame, maxLegs = 5) {
 
 /**
  * Build a True Mixed Multi where each match contributes a DIFFERENT market category in round-robin order
- * (1UP -> Over 1.5 -> 1X2 -> GG -> Corners -> Bookings/Cards -> Over 2.5 -> Shots/SOT -> Double Chance).
+ * (1UP -> Over 1.5 -> Combo Shield -> 1X2 -> GG -> Corners -> Bookings/Cards -> 1st Half -> Shots/SOT -> Double Chance).
  */
 function selectRoundRobinMixed(byGame, maxLegs = 12, offset = 0) {
   const buckets = [
     (s) => s.marketKey === '1up' && s.p >= 0.66 && s.sportyOdds >= 1.24 && s.sportyOdds <= 1.90,
     (s) => s.marketKey === 'ou1.5' && s.selKey === 'over' && s.p >= 0.72 && s.sportyOdds >= 1.22,
+    (s) => s.group === 'Combos' && s.p >= 0.67 && s.sportyOdds >= 1.24 && s.sportyOdds <= 1.92,
     (s) => s.marketKey === '1x2' && s.p >= 0.59 && s.sportyOdds >= 1.32 && s.sportyOdds <= 2.15,
     (s) => s.marketKey === 'ggng' && s.selKey === 'gg' && s.p >= 0.56 && s.sportyOdds >= 1.50,
     (s) => s.group === 'Corners' && s.selKey === 'over' && s.p >= 0.55 && s.sportyOdds >= 1.40,
-    (s) => s.group === 'Cards' && s.selKey === 'over' && s.p >= 0.56 && s.sportyOdds >= 1.40,
+    (s) => s.group === 'Cards' && (s.selKey === 'over' || s.marketKey === 'cards_milestone') && s.p >= 0.56 && s.sportyOdds >= 1.35,
+    (s) => s.marketKey === '1h_ou0.5' && s.selKey === 'over' && s.p >= 0.68 && s.sportyOdds >= 1.24,
     (s) => s.marketKey === 'ou2.5' && s.selKey === 'over' && s.p >= 0.60 && s.sportyOdds >= 1.48,
-    (s) => (s.group === 'Shots' || s.group === 'Offsides & fouls') && s.p >= 0.55 && s.sportyOdds >= 1.42,
+    (s) => (s.group === 'Shots' || s.group === 'Offsides & fouls' || s.group === 'Player Props') && s.p >= 0.57 && s.sportyOdds >= 1.35,
     (s) => s.marketKey === 'dc' && s.p >= 0.76 && s.sportyOdds >= 1.18 && s.sportyOdds <= 1.50,
   ];
 
@@ -499,11 +608,11 @@ function buildCorrelatedSameGameMulti(byGame, targetLegs = 9, offset = 0) {
     const over25 = selections.find((s) => s.marketKey === 'ou2.5' && s.selKey === 'over' && s.p >= 0.58 && s.sportyOdds >= 1.45);
     const ggYes = selections.find((s) => s.marketKey === 'ggng' && s.selKey === 'gg' && s.p >= 0.56 && s.sportyOdds >= 1.48);
     const attackProp = selections
-      .filter((s) => ['Corners', 'Shots'].includes(s.group) && s.selKey === 'over' && s.p >= 0.55 && s.sportyOdds >= 1.38)
+      .filter((s) => (['Corners', 'Shots'].includes(s.group) && s.selKey === 'over' && s.p >= 0.55 && s.sportyOdds >= 1.38) || (s.group === 'Player Props' && s.p >= 0.62 && s.sportyOdds >= 1.30))
       .sort((a, b) => (b.calibratedScore || b.p) - (a.calibratedScore || a.p))[0];
 
     let combo = [];
-    // Script A: Dominant Favorite + Over 1.5 Goals + Attack Volume (Corners/Shots Over)
+    // Script A: Dominant Favorite + Over 1.5 Goals + Attack Volume (Corners/Shots/Star SOT)
     if (fav1Up && over15) {
       combo = [fav1Up, over15, attackProp].filter(Boolean);
     } else if (over25 && ggYes) {
@@ -534,7 +643,7 @@ function buildCorrelatedSameGameMulti(byGame, targetLegs = 9, offset = 0) {
 
 /**
  * High-Accuracy History-Verified Multi-Match Compounder (up to SportyBet Ghana's 50-Game Limit & 20,000,000x+ Odds).
- * Strictly picks ONLY history-vetted, high-likelihood selections across distinct matches (never > 50 games),
+ * Strictly picks ONLY history- & lineup-vetted, high-likelihood selections across distinct matches (never > 50 games),
  * pacing leg odds around the required geometric mean so 45–50 games reach 1M+ to 20M+ without reckless longshots.
  */
 function buildHighAccuracyMultiMatch(byGame, {
@@ -553,10 +662,11 @@ function buildHighAccuracyMultiMatch(byGame, {
   const safeMarkets = new Set([
     '1up', '2up', 'dc', 'ou1.5', 'dnb', '1x2', 'ml',
     'homeou0.5', 'awayou0.5', 'ou2.5', 'homeou1.5', 'awayou1.5',
+    'dc_ou1.5', 'home_or_o25', 'away_or_o25', 'ht_or_ft', '1h_ou0.5',
   ]);
   const pool = [];
 
-  for (const { event, hasModelFusion, history, selections } of byGame.values()) {
+  for (const { event, hasModelFusion, history, lineupIntel, selections } of byGame.values()) {
     const valid = selections.filter((s) =>
       safeMarkets.has(s.marketKey) &&
       s.p >= minP &&
@@ -574,16 +684,17 @@ function buildHighAccuracyMultiMatch(byGame, {
         ? -Math.abs(Math.log((b.sportyOdds || 1.35) / Math.max(1.30, requiredAvgOdds * 1.03))) * 0.16
         : (b.sportyOdds >= 1.28 ? 0.02 : 0);
       const scoreA = (a.calibratedScore || a.p) * 1.18 + Math.min(0.05, Math.max(0, (a.edgePct || 0) * 0.004)) + paceA;
-      const scoreB = (b.calibratedScore || b.p) * 1.18 + Math.min(0.05, Math.max(0, (b.edgePct || 0) * 0.004)) + paceB;
+      const scoreB = (b.calibratedScore || b.p) * 1.18 + Math.min(0.05, Math.max(0, (a.edgePct || 0) * 0.004)) + paceB;
       return scoreB - scoreA;
     });
 
     const best = valid[0];
     const histBonus = history?.verified ? 0.045 : 0;
+    const luBonus = lineupIntel?.lineupConfirmed ? 0.02 : 0;
     const paceRank = targetOdds >= 5000000 && best.sportyOdds >= requiredAvgOdds ? 0.025 : 0;
     pool.push({
       pick: best,
-      rankScore: (best.calibratedScore || best.p) + (hasModelFusion ? 0.035 : 0) + histBonus + paceRank,
+      rankScore: (best.calibratedScore || best.p) + (hasModelFusion ? 0.035 : 0) + histBonus + luBonus + paceRank,
       startTime: event.estimateStartTime,
     });
   }
@@ -604,7 +715,7 @@ function buildHighAccuracyMultiMatch(byGame, {
   return chosen;
 }
 
-/** Pre-compile all curated daily tickets (with live SportyBet Ghana Booking Codes, History Vetting & 50-Game Cap). */
+/** Pre-compile all curated daily tickets (with live SportyBet Ghana Booking Codes, Pre-Booked Pod A-D Codes, History + Lineup Vetting & 50-Game Cap). */
 export async function getCuratedTickets(force = false, timeWindow = 'all') {
   const winKey = String(timeWindow || 'all');
   const cached = curatedCacheByWindow.get(winKey);
@@ -626,7 +737,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
   const vhimBankerLegs = selectOnePerGame(
     byGame,
     5,
-    (s) => ['1x2', '1up', 'dc', 'ou1.5', 'dnb'].includes(s.marketKey) && s.p >= 0.72 && s.sportyOdds >= 1.22 && s.sportyOdds <= 1.65,
+    (s) => ['1x2', '1up', 'dc', 'ou1.5', 'dnb', 'dc_ou1.5', 'ht_or_ft'].includes(s.marketKey) && s.p >= 0.72 && s.sportyOdds >= 1.22 && s.sportyOdds <= 1.65,
     (s) => (s.calibratedScore || s.p) * 1.15 + (s.edgePct > 0 ? 0.04 : 0)
   );
 
@@ -634,19 +745,27 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
   const valueSniperLegs = selectOnePerGame(
     byGame,
     6,
-    (s) => !['cs', 'multiscore', 'htft'].includes(s.marketKey) && s.p >= 0.58 && s.sportyOdds >= 1.38 && s.sportyOdds <= 2.35 && (s.edgePct >= 0.2 || s.steamPct >= 2.2),
+    (s) => !['cs', 'multiscore', 'htft'].includes(s.marketKey) && s.p >= 0.58 && s.sportyOdds >= 1.38 && s.sportyOdds <= 2.35 && (s.edgePct >= 0.2 || s.steamPct >= 2.2 || s.oddsMovement?.isSteamCrash),
     (s) => (s.calibratedScore || s.p) + Math.max(0, s.edgePct * 0.008) + Math.max(0, (s.steamPct || 0) * 0.005)
   );
 
-  // 2. 🏆 Mega 20-Fold Accumulator (Full 20 Folds across distinct matches!)
+  // 1C. 🛡️ Combo & "Or" Shield Banker (8-Fold — Dual-Win Protection!)
+  const comboShield8Legs = selectOnePerGame(
+    fullPoolByGame,
+    8,
+    (s) => ['dc_ou1.5', 'dc_ou2.5', 'home_or_o25', 'away_or_o25', 'home_or_gg', 'away_or_gg', 'ht_or_ft', '1x2_ou1.5'].includes(s.marketKey) && s.p >= 0.66 && s.sportyOdds >= 1.24 && s.sportyOdds <= 1.88,
+    (s) => (s.calibratedScore || s.p) * 1.18 + Math.max(0, (s.edgePct || 0) * 0.004)
+  );
+
+  // 2. 🏆 Mega 20-Fold Accumulator (Full 20 Folds across distinct matches + Pod A/B!)
   const mega20Legs = selectOnePerGame(
     byGame,
     20,
-    (s) => ['1x2', '1up', '2up', 'dc', 'ou1.5', 'ou2.5', 'homeou0.5', 'awayou0.5'].includes(s.marketKey) && s.p >= 0.68 && s.sportyOdds >= 1.18 && s.sportyOdds <= 1.75,
+    (s) => ['1x2', '1up', '2up', 'dc', 'ou1.5', 'ou2.5', 'homeou0.5', 'awayou0.5', 'dc_ou1.5', 'ht_or_ft'].includes(s.marketKey) && s.p >= 0.68 && s.sportyOdds >= 1.18 && s.sportyOdds <= 1.75,
     (s) => s.calibratedScore || s.p
   );
 
-  // 2B. 🚀 30-Fold History-Verified Super Multi (~800x – 15,000x Odds)
+  // 2B. 🚀 30-Fold History-Verified Super Multi (~800x – 15,000x Odds + Pod A/B/C!)
   const superMulti30Legs = buildHighAccuracyMultiMatch(fullPoolByGame, {
     targetOdds: 0,
     maxLegs: 30,
@@ -655,7 +774,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
     maxLegOdds: 1.66,
   });
 
-  // 2C. 💎 Multi-Match "1M–5M" History-Verified Vhim Grand Slam (Strictly <= 48 Games!)
+  // 2C. 💎 Multi-Match "1M–5M" History-Verified Vhim Grand Slam (Strictly <= 48 Games + Pod A/B/C/D!)
   const millionGrandSlamLegs = buildHighAccuracyMultiMatch(fullPoolByGame, {
     targetOdds: 1600000,
     maxLegs: 48,
@@ -664,7 +783,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
     maxLegOdds: 1.68,
   });
 
-  // 2D. 👑 50-Game "20-MILLION+" (20M+) History-Verified Mega Multi (SportyBet Max 50 Games!)
+  // 2D. 👑 50-Game "20-MILLION+" (20M+) History-Verified Mega Multi (SportyBet Max 50 Games + Pod A/B/C/D!)
   const twentyMillionMegaLegs = buildHighAccuracyMultiMatch(fullPoolByGame, {
     targetOdds: 22000000,
     maxLegs: SPORTY_MAX_GAMES, // Strictly 50 games max!
@@ -673,15 +792,15 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
     maxLegOdds: 1.82,
   });
 
-  // 2E. 🥅 High-Accuracy Shots, SOT, Corners, Cards & Tactical Props Sniper (8-Fold)
+  // 2E. 🥅 High-Accuracy Shots, SOT, Corners, Cards, Player & Tactical Props Sniper (8-Fold)
   const tacticalProps8Legs = selectOnePerGame(
     fullPoolByGame,
     8,
-    (s) => ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls'].includes(s.group) && s.p >= 0.62 && s.sportyOdds >= 1.22 && s.sportyOdds <= 1.92,
+    (s) => ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls', 'Player Props'].includes(s.group) && s.p >= 0.62 && s.sportyOdds >= 1.22 && s.sportyOdds <= 1.92,
     (s) => (s.calibratedScore || s.p) * 1.2 + Math.max(0, (s.edgePct || 0) * 0.005)
   );
 
-  // 3. 🔀 Mixed Multi Master (12-Fold blending 1X2, Goals, GG, 1UP, Corners, Cards, Shots, Throw-Ins)
+  // 3. 🔀 Mixed Multi Master (12-Fold blending 1X2, Goals, Combo Shields, GG, 1UP, Corners, Cards, 1H, Shots)
   const mixed12Legs = selectRoundRobinMixed(byGame, 12, 0);
 
   // 4. 🎯 Correct Score Sniper (3-Fold High-Probability Exact Scorelines)
@@ -752,7 +871,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
   const idStatsLegs = selectOnePerGame(
     byGame,
     8,
-    (s) => ['Corners', 'Cards'].includes(s.group) && s.selKey === 'over' && s.p >= 0.55 && s.sportyOdds >= 1.42 && s.sportyOdds <= 2.10,
+    (s) => ['Corners', 'Cards'].includes(s.group) && (s.selKey === 'over' || s.marketKey === 'cards_milestone') && s.p >= 0.55 && s.sportyOdds >= 1.38 && s.sportyOdds <= 2.10,
     (s) => s.calibratedScore || s.p
   );
 
@@ -764,6 +883,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
     fastCash,
     vhimBanker,
     valueSniper,
+    comboShield8,
     mega20,
     superMulti30,
     millionGrandSlam,
@@ -787,77 +907,84 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
       title: '💰 Daily 2.00x Safe Rollover Banker',
       category: 'Rollover Banker',
       ticketType: 'rollover',
-      description: 'History-verified ~2.10x bankroll compounder built from our top 2–3 ultra-safe 1UP, Double Chance & Over 1.5 locks (Last-15 Form & H2H checked).',
+      description: 'History- & lineup-verified ~2.10x bankroll compounder built from our top 2–3 ultra-safe 1UP, Combo Shield, Double Chance & Over 1.5 locks.',
     }, dailyRolloverLegs),
     finalizeTicket({
       id: 'fast-cash-soon',
       title: '⚡ Kickoff Soon Fast-Cash Express',
       category: 'Fast Cash',
       ticketType: 'mixed',
-      description: 'Strictly history-verified matches kicking off in the nearest time window so your slip settles fast without multi-day waiting.',
+      description: 'Strictly history- & lineup-verified matches kicking off in the nearest time window so your slip settles fast without multi-day waiting.',
     }, fastCashLegs),
     finalizeTicket({
       id: 'vhim-banker-5',
       title: '🔥 The "Vhim" Sure Banker (5-Fold)',
       category: 'Vhim Banker',
       ticketType: 'mixed',
-      description: 'Our highest-conviction 5-leg banker combining 1UP, Over 1.5, and dominant winners vetted against Last-15 Form, Venue Splits & H2H.',
+      description: 'Our highest-conviction 5-leg banker combining 1UP, Over 1.5, Combo Shields & dominant winners vetted against Last-15 Form, Lineups & H2H.',
     }, vhimBankerLegs),
     finalizeTicket({
       id: 'value-ev-sniper-6',
       title: '💎 Positive-EV & Steam Value Sniper (6-Fold)',
       category: 'Vhim Banker',
       ticketType: 'mixed',
-      description: 'Targets mispriced SportyBet lines where De-Vigged Ensemble + Historical Empirical Hit Rate beats bookmaker implied odds.',
+      description: 'Targets mispriced SportyBet lines & recorded 15-min odds crashes where De-Vigged Ensemble + Historical Hit Rate beats bookmaker implied odds.',
     }, valueSniperLegs),
+    finalizeTicket({
+      id: 'combo-shield-banker-8',
+      title: '🛡️ Combo & "Or" Shield Banker (8-Fold)',
+      category: 'Combo Shields',
+      ticketType: 'combos',
+      description: 'Dual-win insurance markets ("Home or Over 2.5", "1st Half or Match Result", "Double Chance & Over 1.5") where two independent match scripts cash your leg!',
+    }, comboShield8Legs),
     finalizeTicket({
       id: 'mega-20',
       title: '🏆 Mega 20-Fold Accumulator',
       category: 'Mega 20-Fold',
       ticketType: 'mixed',
-      description: 'Full 20-match history-verified accumulator across major leagues with zero match conflicts and a live 20-fold SportyBet Ghana code.',
+      description: 'Full 20-match history-verified accumulator across major leagues with zero match conflicts, live 20-fold SportyBet code + Pre-Booked Pod A & Pod B codes.',
     }, mega20Legs),
     finalizeTicket({
       id: 'super-multi-30',
       title: '🚀 30-Game History-Verified Super Multi',
       category: 'Multi-Match & 1M+',
       ticketType: 'million',
-      description: '30 distinct history-checked matches (68%–85% win likelihood per leg) compounded into a massive SportyBet code. Follow the Flex Cut-3 directive!',
+      description: '30 distinct history- & lineup-checked matches (68%–85% win likelihood per leg) with pre-booked Pod A, Pod B & Pod C 10-leg SportyBet codes!',
     }, superMulti30Legs),
     finalizeTicket({
       id: 'million-odds-grand-slam',
       title: '💎 Multi-Match "1M–5M" History-Verified Grand Slam',
       category: 'Multi-Match & 1M+',
       ticketType: 'million',
-      description: 'Strictly <= 48 games (within SportyBet Ghana\'s 50-game limit!), compounding Last-15 Form & H2H-verified winners into 1,000,000x+ total odds. Turn ON SportyBet Flex!',
+      description: 'Strictly <= 48 games (within SportyBet Ghana\'s 50-game limit!), compounding Form, H2H & Lineup-verified winners into 1,000,000x+ total odds + 4 Pre-Booked Pod Codes!',
     }, millionGrandSlamLegs),
     finalizeTicket({
       id: 'twenty-million-mega-50',
       title: '👑 50-Game "20-MILLION+" (20M+) History-Verified Mega Multi',
       category: 'Multi-Match & 1M+',
       ticketType: 'million',
-      description: 'Exact 50-game SportyBet Ghana max slip! Every leg is vetted against Last-15 Form, Venue Splits & H2H (@1.35–@1.80 sweet spot) to compound past 20,000,000x+ total odds. MUST play with Max-Flex + 4 Pod Splits!',
+      description: 'Exact 50-game SportyBet Ghana max slip! Every leg is vetted against Last-15 Form, Lineups, Injuries & H2H (@1.35–@1.80 sweet spot) to compound past 20,000,000x+ total odds + 4 Pre-Booked Pod Codes (Pod A–D)!',
     }, twentyMillionMegaLegs),
     finalizeTicket({
       id: 'tactical-props-sniper-8',
-      title: '🥅 High-Accuracy Shots, SOT, Corners & Props Sniper (8-Fold)',
+      title: '🥅 High-Accuracy Shots, SOT, Corners, Player & Props Sniper (8-Fold)',
       category: 'Tactical Props',
       ticketType: 'props',
-      description: 'Strictly picks the highest-likelihood history-checked Shots 1X2, Shots on Target, Corners, Bookings (Cards), Fouls & Offsides markets across 8 matches.',
+      description: 'Strictly picks the highest-likelihood Season-Stat-verified Shots 1X2, Shots on Target, Corners, Bookings (Cards), Offsides & Player Props across 8 matches.',
     }, tacticalProps8Legs),
     finalizeTicket({
       id: 'mixed-master-12',
       title: '🔀 Mixed Multi Master (12-Fold)',
       category: 'Mixed Multi',
       ticketType: 'mixed',
-      description: 'True Puntrr.ai style mix: blends history-verified 1UP, Over/Under, 1X2, GG/NG, Corners, Bookings (Cards), Shots & Double Chance.',
+      description: 'True Puntrr.ai style mix: blends history-verified 1UP, Combo Shields, Over/Under, 1X2, GG/NG, Corners, Bookings, 1st Half & Shots.',
     }, mixed12Legs),
     finalizeTicket({
       id: 'correlated-sgm-6',
       title: '🔗 Correlated Same-Game Multi (6 Picks)',
       category: 'Mixed Multi',
       ticketType: 'mixed',
-      description: 'Positively correlated match scripts (Favorite 1UP + Over 1.5 + Attack Corners/Shots) stacked across top dominant fixtures.',
+      description: 'Positively correlated match scripts (Favorite 1UP + Over 1.5 + Attack Corners/Shots/Player SOT) stacked across top dominant fixtures.',
     }, sgm6Legs),
     finalizeTicket({
       id: 'cs-sniper-3',
@@ -878,7 +1005,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
       title: '🔁 Identical: 20-Fold All Over 1.5 Goals',
       category: 'Identical',
       ticketType: 'identical',
-      description: 'Identical single-market accumulator: every single leg is history-verified Over 1.5 Total Goals across 20 matches.',
+      description: 'Identical single-market accumulator: every single leg is history-verified Over 1.5 Total Goals across 20 matches (+ Pod A & B codes).',
     }, idOver15Legs),
     finalizeTicket({
       id: 'identical-over25-10',
@@ -899,7 +1026,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
       title: '🔁 Identical: 10-Fold Straight 1X2 Winners',
       category: 'Identical',
       ticketType: 'identical',
-      description: 'Identical single-market accumulator: 10 straight full-time match winners backed by recent form & H2H.',
+      description: 'Identical single-market accumulator: 10 straight full-time match winners backed by recent form, lineups & H2H.',
     }, id1x2Legs),
     finalizeTicket({
       id: 'identical-1up-12',
@@ -920,7 +1047,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
       title: '🚩 Identical: 8-Fold Corners & Cards Over',
       category: 'Identical',
       ticketType: 'identical',
-      description: 'Strictly Corners Over/Under and Bookings (Yellow/Red Cards) Over/Under selections.',
+      description: 'Strictly Season-Stat-vetted Corners Over/Under and Bookings (Yellow/Red Cards) Over/Under selections.',
     }, idStatsLegs),
     buildInsiderRadarTicket(8),
   ]);
@@ -937,6 +1064,7 @@ export async function getCuratedTickets(force = false, timeWindow = 'all') {
     vhimBanker,
     fastCash,
     valueSniper,
+    comboShield8,
     twentyMillionMega,
     millionGrandSlam,
     superMulti30,
@@ -1037,7 +1165,7 @@ export async function getSlipCentreVault(force = false) {
     finalizeTicket({
       id: 'vault-cs-20',
       title: '🏦 Full 20-Fold Correct Score Vault',
-      description: 'All 20 highest-confidence Correct Score games compiled into one SportyBet Ghana booking code!',
+      description: 'All 20 highest-confidence Correct Score games compiled into one SportyBet Ghana booking code + Pod A & B codes!',
     }, all20Legs),
     finalizeTicket({
       id: 'vault-cs-dual-5',
@@ -1096,7 +1224,14 @@ export async function generateCustom({
     switch (type) {
       case '20m':
       case 'million':
-        return (s) => ['1up', '2up', 'dc', 'ou1.5', 'dnb', '1x2', 'ml', 'homeou0.5', 'awayou0.5', 'ou2.5', 'homeou1.5', 'awayou1.5'].includes(s.marketKey) && s.p >= 0.60 && s.sportyOdds >= 1.26 && s.sportyOdds <= 1.84;
+        return (s) => ['1up', '2up', 'dc', 'ou1.5', 'dnb', '1x2', 'ml', 'homeou0.5', 'awayou0.5', 'ou2.5', 'homeou1.5', 'awayou1.5', 'dc_ou1.5', 'home_or_o25', 'away_or_o25', 'ht_or_ft', '1h_ou0.5'].includes(s.marketKey) && s.p >= 0.60 && s.sportyOdds >= 1.26 && s.sportyOdds <= 1.84;
+      case 'combos':
+        return (s) => s.group === 'Combos' && s.p >= 0.60 && s.sportyOdds >= 1.20 && s.sportyOdds <= maxOdds;
+      case '1h':
+      case 'first_half':
+        return (s) => (s.group === '1st Half' || s.marketKey.startsWith('1h_')) && s.p >= 0.58 && s.sportyOdds >= 1.18 && s.sportyOdds <= maxOdds;
+      case 'player_props':
+        return (s) => s.group === 'Player Props' && s.p >= 0.55 && s.sportyOdds >= 1.16 && s.sportyOdds <= maxOdds;
       case 'ou1.5':
         return (s) => s.marketKey === 'ou1.5' && s.selKey === 'over' && s.p >= 0.66 && s.sportyOdds >= 1.16 && s.sportyOdds <= maxOdds;
       case 'ou2.5':
@@ -1121,7 +1256,7 @@ export async function generateCustom({
       case 'throws_gk':
         return (s) => ['Throws & Goal Kicks', 'Offsides & fouls', 'Shots'].includes(s.group) && s.p >= 0.56 && s.sportyOdds >= 1.18 && s.sportyOdds <= maxOdds;
       case 'stats':
-        return (s) => ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls'].includes(s.group) && s.p >= 0.58 && s.sportyOdds >= 1.18 && s.sportyOdds <= maxOdds;
+        return (s) => ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls', 'Player Props'].includes(s.group) && s.p >= 0.58 && s.sportyOdds >= 1.18 && s.sportyOdds <= maxOdds;
       case 'cs':
         return (s) => s.marketKey === 'cs' && s.p >= 0.09;
       case 'multiscore':
@@ -1181,7 +1316,7 @@ export async function generateCustom({
       id: `custom-${chosenLegs.length}-${marketType}-${risk}-v${v + 1}-${Date.now()}`,
       title: `⚡ Custom ${chosenLegs.length}-Game ${marketType.toUpperCase()} History-Verified Slip${varLabel}`,
       category: chosenLegs.length >= 25 ? 'Multi-Match & 1M+' : 'Custom',
-      description: `${sameGameMulti ? 'Correlated Same-Game Multi' : 'History-Verified 1-Leg-Per-Match Accumulator (Max 50 SportyBet Games)'} · Risk: ${risk.toUpperCase()}${oddsTag}${winTag}`,
+      description: `${sameGameMulti ? 'Correlated Same-Game Multi' : 'History- & Lineup-Verified 1-Leg-Per-Match Accumulator (Max 50 SportyBet Games)'} · Risk: ${risk.toUpperCase()}${oddsTag}${winTag}`,
       params: { legs: chosenLegs.length, marketType, risk, sameGameMulti, timeWindow, targetOdds: effectiveTarget, variation: v + 1 },
     }, chosenLegs);
     builtTickets.push(t);
@@ -1193,17 +1328,9 @@ export async function generateCustom({
   };
 }
 
-/** Normal CDF helper for tactical Throw-In / Goal Kick / Shot accuracy scoring. */
-function stdNormCdf(z) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(z));
-  const d = 0.3989422804 * Math.exp(-0.5 * z * z);
-  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + 1.330274429 * t))));
-  return z >= 0 ? 1 - p : p;
-}
-
 /**
  * Derive high-accuracy tactical Throw-Ins & Goal Kicks predictions for an upcoming soccer fixture
- * using de-vigged 1X2 dominance, goal expectancy, shot asymmetry & corner pressure (plus ESPN StatsModel when available).
+ * using real ESPN StatsModel distributions when available.
  */
 function deriveTacticalThrowAndGkPicks(event, selections, modelPred) {
   if (event.sportType && event.sportType !== 'soccer') return [];
@@ -1212,7 +1339,7 @@ function deriveTacticalThrowAndGkPicks(event, selections, modelPred) {
   const matchup = `${H} vs ${A}`;
   const out = [];
 
-  // 1. If ESPN StatsModel already computed exact Throw-Ins & Goal Kicks distributions for this match, harvest top picks!
+  // Harvest real ESPN StatsModel Throw-Ins & Goal Kicks distributions for this match
   if (modelPred?.markets?.length) {
     const tgMarkets = modelPred.markets.filter((m) => m.group === 'Throws & Goal Kicks');
     for (const m of tgMarkets) {
@@ -1257,7 +1384,7 @@ function deriveTacticalThrowAndGkPicks(event, selections, modelPred) {
 }
 
 /**
- * Dedicated High-Accuracy Match-Stat Props Hub (Throws, Goal Kicks, Shots, SOT, Corners, Cards, Offsides & Fouls).
+ * Dedicated High-Accuracy Match-Stat, Player Prop, 1st-Half & Combo Shield Hub.
  * Strictly filters to high-likelihood winners ("pick only those that are likely to succeed") and pre-books a live SportyBet Props Multi!
  */
 export async function getHighAccuracyPropsHub({
@@ -1272,6 +1399,9 @@ export async function getHighAccuracyPropsHub({
 
   const classifyProp = (s) => {
     const mk = String(s.marketKey || '').toLowerCase();
+    if (mk.startsWith('player_') || s.group === 'Player Props') return 'player_props';
+    if (s.group === 'Combos') return 'combos';
+    if (mk.startsWith('1h_') || s.group === '1st Half') return 'first_half';
     if (mk.startsWith('throwins')) return 'throwins';
     if (mk.startsWith('goalkicks')) return 'goalkicks';
     if (mk.startsWith('shots') || mk.startsWith('sot') || s.group === 'Shots') return 'shots';
@@ -1284,19 +1414,22 @@ export async function getHighAccuracyPropsHub({
   const allProps = [];
   const seenKeys = new Set();
 
-  // 1. Live SportyBet Ghana Direct-Bookable Match-Stat Props
+  // 1. Live SportyBet Ghana Direct-Bookable Match-Stat, Player, 1st-Half & Combo Shield Props
   for (const { event, hasModelFusion, selections } of byGame.values()) {
     const propSels = selections.filter((s) => {
       const cat = classifyProp(s);
-      return cat && s.p >= minP && s.p <= 0.94 && s.sportyOdds >= 1.15 && s.sportyOdds <= 2.35;
+      if (!cat) return false;
+      const floorP = cat === 'player_props' ? Math.min(minP, 0.56) : minP;
+      return s.p >= floorP && s.p <= 0.94 && s.sportyOdds >= 1.15 && s.sportyOdds <= 2.40;
     });
 
     propSels.sort((a, b) => b.p - a.p);
     const usedMarketPerGame = new Set();
     for (const s of propSels) {
-      if (usedMarketPerGame.size >= 4) break;
-      if (usedMarketPerGame.has(s.marketKey)) continue;
-      usedMarketPerGame.add(s.marketKey);
+      if (usedMarketPerGame.size >= 6) break;
+      const mDedupe = s.group === 'Player Props' ? `${s.marketKey}:${s.selKey}` : s.marketKey;
+      if (usedMarketPerGame.has(mDedupe)) continue;
+      usedMarketPerGame.add(mDedupe);
       const propCat = classifyProp(s);
       const dedupeKey = `${event.eventId}:${s.marketKey}:${s.selKey}`;
       seenKeys.add(dedupeKey);
@@ -1309,6 +1442,7 @@ export async function getHighAccuracyPropsHub({
           s.edgePct > 0
             ? `Live SportyBet line @${s.sportyOdds} carries +${s.edgePct}% positive EV vs ${Math.round(s.p * 100)}% calibrated win likelihood.`
             : `High-accuracy ${Math.round(s.p * 100)}% statistical + de-vigged market consensus (@${s.sportyOdds}).`,
+          s.lineupBadge ? `Squad/Season Intel: ${s.lineupBadge}` : '',
           s.historySummary ? `History: ${s.historySummary}` : '',
         ].filter(Boolean).join(' · '),
       });
@@ -1336,10 +1470,10 @@ export async function getHighAccuracyPropsHub({
     }
   }
 
-  // Sort strictly by accuracy + history verification + live bookability bonus
+  // Sort strictly by accuracy + history/lineup verification + live bookability bonus
   allProps.sort((a, b) => {
-    const scoreA = a.p + (a.bookableOnSporty ? 0.015 : 0) + (a.historyVerified ? 0.012 : 0) + Math.max(0, (a.edgePct || 0) * 0.002);
-    const scoreB = b.p + (b.bookableOnSporty ? 0.015 : 0) + (b.historyVerified ? 0.012 : 0) + Math.max(0, (b.edgePct || 0) * 0.002);
+    const scoreA = a.p + (a.bookableOnSporty ? 0.015 : 0) + (a.historyVerified ? 0.012 : 0) + (a.lineupBadge ? 0.008 : 0) + Math.max(0, (a.edgePct || 0) * 0.002);
+    const scoreB = b.p + (b.bookableOnSporty ? 0.015 : 0) + (b.historyVerified ? 0.012 : 0) + (b.lineupBadge ? 0.008 : 0) + Math.max(0, (b.edgePct || 0) * 0.002);
     return scoreB - scoreA;
   });
 
@@ -1347,6 +1481,9 @@ export async function getHighAccuracyPropsHub({
     all: allProps.length,
     bookable: allProps.filter((p) => p.bookableOnSporty).length,
     shots: allProps.filter((p) => p.propCategory === 'shots').length,
+    player_props: allProps.filter((p) => p.propCategory === 'player_props').length,
+    combos: allProps.filter((p) => p.propCategory === 'combos').length,
+    first_half: allProps.filter((p) => p.propCategory === 'first_half').length,
     throwins: allProps.filter((p) => p.propCategory === 'throwins').length,
     goalkicks: allProps.filter((p) => p.propCategory === 'goalkicks').length,
     corners: allProps.filter((p) => p.propCategory === 'corners').length,
@@ -1377,10 +1514,10 @@ export async function getHighAccuracyPropsHub({
   const featuredPropsTicket = topBookableLegs.length >= 2
     ? await finalizeTicket({
       id: `props-hub-sniper-${category}-${topBookableLegs.length}`,
-      title: `🥅 High-Accuracy Tactical Props Sniper (${topBookableLegs.length}-Fold)`,
+      title: `🥅 High-Accuracy Tactical & Player Props Sniper (${topBookableLegs.length}-Fold)`,
       category: 'Tactical Props',
       ticketType: 'props',
-      description: 'Compiled strictly from our highest-likelihood live SportyBet Ghana Shots, SOT, Corners, Bookings, Fouls & Offsides locks.',
+      description: 'Compiled strictly from our highest-likelihood live SportyBet Ghana Shots, SOT, Player Props, Combo Shields, 1st Half, Corners & Bookings locks.',
     }, topBookableLegs)
     : null;
 
@@ -1391,7 +1528,6 @@ export async function getHighAccuracyPropsHub({
     timeWindow,
     counts,
     featuredPropsTicket,
-    props: filtered.slice(0, 180),
+    props: filtered.slice(0, 220),
   };
 }
-

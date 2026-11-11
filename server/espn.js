@@ -434,12 +434,29 @@ export async function getSummary(league, eventId) {
       injuries: (s.injuries || []).map((t) => ({
         team: t.team?.displayName,
         teamId: String(t.team?.id ?? ''),
-        players: (t.injuries || []).slice(0, 12).map((i) => ({
+        players: (t.injuries || []).slice(0, 14).map((i) => ({
           name: i.athlete?.displayName,
           position: i.athlete?.position?.abbreviation,
           status: i.status || i.type?.description,
           detail: i.details?.type || i.shortComment || '',
         })),
+      })),
+      officials: (s.gameInfo?.officials || []).map((o) => ({
+        name: o.fullName || o.displayName || '',
+        position: o.position?.displayName || o.position?.name || 'Referee',
+      })).filter((o) => o.name),
+      rosters: (s.rosters || []).map((r) => ({
+        homeAway: r.homeAway || null,
+        team: r.team?.displayName || '',
+        teamId: String(r.team?.id ?? ''),
+        formation: r.formation || null,
+        starters: (r.roster || [])
+          .filter((p) => p.starter)
+          .map((p) => ({
+            name: p.athlete?.displayName || '',
+            position: p.position?.abbreviation || '',
+            jersey: p.jersey || '',
+          })),
       })),
       lastFive: (s.lastFiveGames || []).map((t) => ({
         team: t.team?.displayName,

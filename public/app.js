@@ -501,19 +501,20 @@ function renderSlip() {
     return;
   }
 
-  // TAB 3: LOAD & AUDIT ANY SPORTYBET GHANA BOOKING CODE
+  // TAB 3: LOAD & AUDIT ANY SPORTYBET GHANA BOOKING CODE (+ 1-CLICK STRIP STARTED & REBOOK)
   if (activeTab === 'loadcode') {
     const res = state.auditedCodeResult;
     const legsJson = res?.legs ? JSON.stringify(res.legs).replace(/"/g, '&quot;') : '[]';
+    const cleanRes = state.rebookedAuditResult;
     c.innerHTML = `
       ${tabsNav}
       <div style="display:grid;gap:.8rem">
         <div class="slip-item">
-          <div class="slip-item-title">🔍 Decode & Audit Any SportyBet Ghana Code</div>
-          <div class="slip-item-meta">Paste any 6-character SportyBet Ghana Booking Code (e.g. 9YG45J) to pull its matches from SportyBet and check our AI probability on every leg.</div>
+          <div class="slip-item-title">🔍 Decode, Audit &amp; Clean Any SportyBet Ghana Code</div>
+          <div class="slip-item-meta">Paste any 6-character SportyBet Ghana Booking Code (e.g. 9YG45J) to inspect every leg, detect started/locked games, and mint a fresh upcoming-only code in 1 click.</div>
           <div style="display:flex;gap:.4rem;margin-top:.5rem">
             <input id="audit-code-input" type="text" placeholder="Enter code e.g. 9YG45J" value="${esc(state.auditCodeInput || '')}" style="flex:1;padding:.5rem .7rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-weight:800;text-transform:uppercase">
-            <button class="btn primary" onclick="window.oracleAuditSportyCode()">Check Code</button>
+            <button type="button" class="btn primary" onclick="window.oracleAuditSportyCode()">Check Code</button>
           </div>
         </div>
         ${res ? `
@@ -521,20 +522,27 @@ function renderSlip() {
             <div class="slip-item-top">
               <div>
                 <div class="slip-item-title">Code: ${esc(res.shareCode)} (${res.count} Legs)</div>
-                <div class="slip-item-meta">Verdict: <b>${esc(res.overallRating)}</b> · Total Odds: <b>@${res.totalSportyOdds}</b></div>
+                <div class="slip-item-meta">Verdict: <b>${esc(res.overallRating)}</b> · Total Odds: <b>@${fmtOdds(res.totalSportyOdds)}</b></div>
               </div>
-              <span class="tag ${res.trapsCount ? 'miss' : 'ok'}">${res.trapsCount} Trap Legs</span>
+              <div style="display:flex;gap:.3rem;flex-wrap:wrap;justify-content:flex-end">
+                ${res.startedCount ? `<span class="tag miss">🔒 ${res.startedCount} Started/Locked</span>` : `<span class="tag ok">🟢 All ${res.activeCount ?? res.count} Active</span>`}
+                <span class="tag ${res.trapsCount ? 'miss' : 'ok'}">${res.trapsCount} Trap Legs</span>
+              </div>
             </div>
-            <div style="display:grid;gap:.35rem;max-height:260px;overflow-y:auto;margin:.4rem 0">
+            <div style="display:grid;gap:.35rem;max-height:240px;overflow-y:auto;margin:.4rem 0">
               ${res.legs.map((l, i) => `
-                <div class="ticket-leg">
-                  <span><b>${i + 1}.</b> ${esc(l.matchup)} — <b>${esc(l.sportyPick)}</b></span>
-                  <span class="tag ${l.p >= 0.65 ? 'ok' : l.p < 0.40 ? 'miss' : 'value'}" style="font-size:.7rem">${pct(l.p)} (@${l.sportyOdds})</span>
+                <div class="ticket-leg" style="${(l.isStarted || l.isLocked) ? 'opacity:.62' : ''}">
+                  <span><b>${i + 1}.</b> ${(l.isStarted || l.isLocked) ? '🔒 ' : ''}${esc(l.matchup)} — <b>${esc(l.sportyPick)}</b></span>
+                  <span class="tag ${(l.isStarted || l.isLocked) ? 'muted' : l.p >= 0.65 ? 'ok' : l.p < 0.40 ? 'miss' : 'value'}" style="font-size:.7rem">${(l.isStarted || l.isLocked) ? 'Started/Locked' : `${pct(l.p)} (@${l.sportyOdds})`}</span>
                 </div>`).join('')}
             </div>
-            <div style="display:flex;gap:.4rem">
-              <button class="btn primary" style="flex:1" onclick="window.oracleLoadTicket(${legsJson}, false, '${esc(res.shareCode)}')">📥 Replace My Slip</button>
-              <button class="btn" onclick="window.oracleLoadTicket(${legsJson}, true)">➕ Add to My Slip</button>
+            ${cleanRes?.ok && cleanRes.shareCode ? renderSportyCodeBanner(cleanRes.shareCode, cleanRes.shareURL, cleanRes.keptCount, fmtOdds(cleanRes.totalSportyOdds)) : ''}
+            <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+              <button type="button" class="btn btn-sporty" style="flex:1" onclick="window.oracleRebookClean({ shareCode: '${esc(res.shareCode)}', fromAudit: true }, this)">
+                🧹 ${res.startedCount ? `Strip ${res.startedCount} Started & Mint Fresh Code` : 'Mint Fresh Verified Code'}
+              </button>
+              <button type="button" class="btn primary" onclick="window.oracleLoadTicket(${legsJson}, false, '${esc(res.shareCode)}')">📥 Load Slip</button>
+              <button type="button" class="btn" onclick="window.oracleLoadTicket(${legsJson}, true)">➕ Stack</button>
             </div>
           </div>` : ''}
       </div>`;
@@ -569,18 +577,21 @@ function renderSlip() {
   const gameCounts = {};
   state.slip.forEach((s) => { gameCounts[s.gameId] = (gameCounts[s.gameId] || 0) + 1; });
   const multiSameGameCount = Object.values(gameCounts).filter((cnt) => cnt > 1).length;
+  const nowMs = Date.now();
+  const startedInSlip = state.slip.filter((s) => s.date && new Date(s.date).getTime() <= nowMs + 60000).length;
 
   const itemsHtml = state.slip.map((s, idx) => {
     const activeOdds = s.userOdds || s.sportyOdds || s.fairOdds;
     const edge = ((s.p || 0.5) * activeOdds - 1) * 100;
     const isPos = edge >= 0;
+    const isPast = s.date && new Date(s.date).getTime() <= nowMs + 60000;
     const edgeHtml = `<span class="slip-edge ${isPos ? '' : 'neg'}" title="Value edge vs fair price">${isPos ? '+' : ''}${edge.toFixed(1)}% edge</span>`;
     return `
-      <div class="slip-item">
+      <div class="slip-item" style="${isPast ? 'border-left:3px solid var(--bad);opacity:.78' : ''}">
         <div class="slip-item-top">
           <div>
-            <div class="slip-item-title">${idx + 1}. ${esc(s.matchup)}</div>
-            <div class="slip-item-meta">${esc(s.leagueName || s.league || '')} · ${esc(s.sportyMarket || s.market)}</div>
+            <div class="slip-item-title">${idx + 1}. ${isPast ? '🔒 ' : ''}${esc(s.matchup)}</div>
+            <div class="slip-item-meta">${esc(s.leagueName || s.league || '')} · ${esc(s.sportyMarket || s.market)}${isPast ? ' · <b style="color:var(--bad)">Started</b>' : ''}</div>
           </div>
           <button type="button" class="close" style="width:1.6rem;height:1.6rem;font-size:.9rem" onclick="window.oracleRemoveSlip('${esc(s.id)}')" aria-label="Remove pick">✕</button>
         </div>
@@ -588,6 +599,7 @@ function renderSlip() {
           <span class="slip-pick-name">${esc(s.sportyPick || s.label)}</span>
           <span class="slip-pick-prob">Win Prob: <b>${pct(s.p)}</b> (Fair: @${s.fairOdds})</span>
         </div>
+        ${s.lineupBadge ? `<div class="small" style="font-size:.72rem;color:var(--brand)">${esc(s.lineupBadge)}</div>` : ''}
         ${s.historySummary || s.historyBadge ? `<div class="small muted" style="font-size:.73rem;line-height:1.3">📜 ${esc(s.historySummary || s.historyBadge)}</div>` : ''}
         <div class="slip-odds-row">
           <label class="small muted">SportyBet Odds:
@@ -610,11 +622,14 @@ function renderSlip() {
   c.innerHTML = `
     ${tabsNav}
     ${ state.activeSlipCode?.shareCode ? renderSportyCodeBanner(state.activeSlipCode.shareCode, state.activeSlipCode.shareURL, state.slip.length, fmtOdds(totalSporty)) : `
-      <button type="button" id="book-sporty-btn" class="btn btn-sporty" style="width:100%;justify-content:center;padding:.65rem;margin-bottom:.65rem;font-size:.9rem" onclick="window.oracleBookActiveSlip()">
+      <button type="button" id="book-sporty-btn" class="btn btn-sporty" style="width:100%;justify-content:center;padding:.65rem;margin-bottom:.5rem;font-size:.9rem" onclick="window.oracleBookActiveSlip()">
         🇬🇭 Generate Live SportyBet Ghana Code (${state.slip.length}/${SPORTY_MAX_SLIP} Games)
       </button>` }
+    <button type="button" class="btn" style="width:100%;justify-content:center;margin-bottom:.6rem;font-size:.8rem;border-color:${startedInSlip ? 'var(--bad)' : 'var(--line)'}" onclick="window.oracleRebookClean({ updateActiveSlip: true }, this)">
+      🧹 ${startedInSlip ? `Strip ${startedInSlip} Started Match(es) & Mint Fresh Code` : 'Verify Active Legs & Mint Clean SportyBet Code'}
+    </button>
     ${multiSameGameCount > 0 ? `<div class="slip-warn">⚡ <b>Multi-Additions Active (${multiSameGameCount} match${multiSameGameCount > 1 ? 'es' : ''} with multiple picks)</b>: SportyBet will book all selections into your code for BetBuilder, Singles, or System/Flex play.</div>` : ''}
-    <div style="display:grid;gap:.55rem;max-height:340px;overflow-y:auto;padding-right:.2rem">${itemsHtml}</div>
+    <div style="display:grid;gap:.55rem;max-height:320px;overflow-y:auto;padding-right:.2rem">${itemsHtml}</div>
     <div class="slip-summary" style="margin-top:.75rem">
       <div class="slip-summary-row"><span>Total Games (SportyBet Max 50):</span><b>${state.slip.length} / ${SPORTY_MAX_SLIP}</b></div>
       <div class="slip-summary-row"><span>Combined Win Probability:</span><b>${combP < 0.001 ? `${(combP * 100).toExponential(2)}%` : pct1(combP)}</b></div>
@@ -636,6 +651,231 @@ function renderSlip() {
     </div>`;
 }
 
+// 1-Click Strip Started / Locked Matches & Mint Fresh SportyBet Ghana Code
+async function rebookCleanSportySlip(opts = {}, btnEl = null) {
+  const origHtml = btnEl?.innerHTML;
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.innerHTML = '<span class="spinner"></span> Stripping started & booking…';
+  }
+  try {
+    const payload = {
+      shareCode: opts.shareCode || null,
+      selections: opts.updateActiveSlip ? state.slip : (opts.selections || null),
+      stakeGHS: Number(state.slipStake) || 100,
+    };
+    const res = await api('/api/sportybet/rebook-clean', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok || !res.shareCode) {
+      showToast(res.error || 'No upcoming active legs remained to re-book.', 'err');
+      return;
+    }
+    if (opts.fromAudit) {
+      state.rebookedAuditResult = res;
+      renderSlip();
+    } else if (opts.updateActiveSlip) {
+      const activeIds = new Set((res.activeSelections || []).map((a) => `${a.eventId}:${a.marketId}:${a.outcomeId}`));
+      const nowCutoff = Date.now() + 60000;
+      const filtered = state.slip.filter((s) => {
+        if (s.sportySelection) {
+          return activeIds.has(`${s.sportySelection.eventId}:${s.sportySelection.marketId}:${s.sportySelection.outcomeId}`);
+        }
+        return !s.date || new Date(s.date).getTime() > nowCutoff;
+      });
+      if (filtered.length) state.slip = filtered;
+      saveSlip();
+      state.activeSlipCode = { shareCode: res.shareCode, shareURL: res.shareURL };
+      renderSlip();
+    } else {
+      try { await navigator.clipboard.writeText(res.shareCode); } catch { /* ignore */ }
+    }
+    const stripNote = res.removedCount > 0 ? `Stripped ${res.removedCount} started/locked game(s) → ` : '';
+    showToast(`🇬🇭 ${stripNote}Fresh Code: ${res.shareCode} (${res.keptCount} active legs · @${fmtOdds(res.totalSportyOdds)})`, 'ok');
+    if (btnEl && !opts.fromAudit && !opts.updateActiveSlip) {
+      btnEl.disabled = false;
+      btnEl.innerHTML = `✓ Clean Code: ${esc(res.shareCode)}`;
+      setTimeout(() => { if (origHtml) btnEl.innerHTML = origHtml; }, 5000);
+      return;
+    }
+  } catch (err) {
+    showToast('Clean re-book failed: ' + err.message, 'err');
+  } finally {
+    if (btnEl && (opts.fromAudit || opts.updateActiveSlip)) {
+      btnEl.disabled = false;
+      if (origHtml) btnEl.innerHTML = origHtml;
+    } else if (btnEl && btnEl.disabled) {
+      btnEl.disabled = false;
+      if (origHtml) btnEl.innerHTML = origHtml;
+    }
+  }
+}
+
+// ---------- Instant Telegram + Browser Push Alert Engine UI ----------
+
+function updateAlertsBadge(unread = 0) {
+  const b = $('#alerts-badge');
+  if (!b) return;
+  b.textContent = unread;
+  b.hidden = !(unread > 0);
+}
+
+async function pollAlertsBackground(isInitial = false) {
+  try {
+    const data = await api('/api/alerts');
+    state.alertState = data;
+    updateAlertsBadge(data.unreadCount || 0);
+
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem('oracle_seen_alerts') || 'null'); } catch { seen = null; }
+    const allIds = (data.alerts || []).map((a) => a.id);
+
+    // Seed baseline on very first browser visit so past alerts don't burst desktop notifications
+    if (seen === null || isInitial && !seen.length && allIds.length) {
+      localStorage.setItem('oracle_seen_alerts', JSON.stringify(allIds.slice(0, 120)));
+      return;
+    }
+
+    const seenSet = new Set(seen);
+    const freshAlerts = (data.alerts || []).filter((a) => !seenSet.has(a.id));
+    if (freshAlerts.length) {
+      for (const a of freshAlerts.slice(0, 3)) {
+        seenSet.add(a.id);
+        showToast(`${a.title}`, 'ok');
+        if (
+          localStorage.getItem('oracle_browser_push') !== '0' &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          try {
+            const notif = new Notification(a.title, {
+              body: a.message,
+              tag: a.id,
+            });
+            notif.onclick = () => {
+              window.focus();
+              if (a.shareURL) window.open(a.shareURL, '_blank', 'noopener');
+              else openAlertsDialog();
+            };
+          } catch { /* ignore notification quirk */ }
+        }
+      }
+      allIds.forEach((id) => seenSet.add(id));
+      localStorage.setItem('oracle_seen_alerts', JSON.stringify([...seenSet].slice(-150)));
+    }
+  } catch { /* ignore transient poll hiccup */ }
+}
+
+async function openAlertsDialog() {
+  const dlg = $('#alerts-dialog');
+  if (!dlg) return;
+  $('#alerts-dialog-body').innerHTML = `<div class="d-head"><h2 id="alerts-dialog-title">🔔 Live Alerts &amp; Telegram Push</h2><form method="dialog"><button class="close" aria-label="Close">✕</button></form></div><div class="d-body"><p class="loading"><span class="spinner"></span> Loading alert feed &amp; Telegram settings…</p></div>`;
+  dlg.showModal();
+  try {
+    state.alertState = await api('/api/alerts');
+    updateAlertsBadge(state.alertState.unreadCount || 0);
+    renderAlertsDialog();
+  } catch (err) {
+    $('#alerts-dialog-body .d-body').innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  }
+}
+
+function renderAlertsDialog() {
+  const body = $('#alerts-dialog-body');
+  if (!body || !state.alertState) return;
+  const cfg = state.alertState.config || {};
+  const list = state.alertState.alerts || [];
+  const notifSupported = 'Notification' in window;
+  const notifPerm = notifSupported ? Notification.permission : 'unsupported';
+  const browserPushOn = notifPerm === 'granted' && localStorage.getItem('oracle_browser_push') !== '0';
+
+  const feedHtml = list.length ? list.slice(0, 35).map((a) => {
+    const kindCls = a.type === 'WINNING_TICKET' ? 'win' : a.type === 'HEDGE_LOCK' ? 'hedge' : a.type === 'SHARP_ODDS_CRASH' ? 'crash' : '';
+    return `
+      <div class="alert-feed-item ${a.read ? '' : 'unread'} ${kindCls}">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem;flex-wrap:wrap">
+          <b style="font-size:.88rem">${esc(a.title)}</b>
+          <div style="display:flex;gap:.3rem;align-items:center">
+            ${a.telegramSent ? `<span class="tag ok" style="font-size:.68rem">✓ Telegram</span>` : ''}
+            <span class="small muted">${fmtTime(a.createdAt)}</span>
+          </div>
+        </div>
+        <div class="small" style="line-height:1.38">${esc(a.message)}</div>
+        ${a.shareCode ? `
+          <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.15rem">
+            <button type="button" class="btn" style="padding:.2rem .5rem;font-size:.73rem" onclick="window.oracleCopyCode('${esc(a.shareCode)}', this)">📋 Copy ${esc(a.shareCode)}</button>
+            <a class="btn btn-sporty" style="padding:.2rem .55rem;font-size:.73rem" href="${esc(a.shareURL || `https://www.sportybet.com/gh/?shareCode=${a.shareCode}`)}" target="_blank" rel="noopener">🚀 Load on SportyBet</a>
+          </div>` : ''}
+      </div>`;
+  }).join('') : `<p class="muted small">No alerts fired yet. Click <b>🔔 Send Test Alert</b> or <b>📤 Push Today's Codes</b> below to verify instant delivery!</p>`;
+
+  body.innerHTML = `
+    <div class="d-head">
+      <h2 id="alerts-dialog-title">🔔 Instant Telegram &amp; Browser Push Alerts</h2>
+      <form method="dialog"><button class="close" aria-label="Close">✕</button></form>
+    </div>
+    <div class="d-body" style="display:grid;gap:1rem">
+      <section class="panel" style="margin:0;display:grid;gap:.75rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+          <div>
+            <h3 style="margin:0">🖥️ Browser Desktop Push Notifications</h3>
+            <span class="small muted">Fires native OS desktop alerts when a live Arena slip enters a Hedge-Lock cashout window, settles as WON, or when a SportyBet line crashes.</span>
+          </div>
+          <button type="button" class="btn ${browserPushOn ? 'ok' : 'primary'}" onclick="window.oracleEnableBrowserPush()">
+            ${browserPushOn ? '✅ Desktop Push Active' : notifPerm === 'denied' ? '⚠️ Blocked in Browser Settings' : '🔔 Enable Desktop Push'}
+          </button>
+        </div>
+      </section>
+
+      <section class="panel" style="margin:0;display:grid;gap:.75rem;border-left:4px solid #0ea5e9">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+          <div>
+            <h3 style="margin:0">✈️ Telegram Bot Push Configuration</h3>
+            <span class="small muted">Create a bot via <code>@BotFather</code> on Telegram, message it once, and paste your Bot Token &amp; Chat ID below.</span>
+          </div>
+          <span class="tag ${cfg.hasBotToken && cfg.telegramChatId ? 'ok' : 'muted'}">
+            ${cfg.hasBotToken && cfg.telegramChatId ? (cfg.telegramEnabled ? '🟢 Telegram Connected' : '⏸ Paused') : '⚪ Not Configured'}
+          </span>
+        </div>
+
+        <div class="alerts-config-grid">
+          <label class="small">
+            <b>Telegram Bot Token</b> ${cfg.hasBotToken ? `<span class="muted">(Saved: ${esc(cfg.telegramBotTokenMasked)})</span>` : ''}
+            <input id="tg-bot-token" type="password" class="alerts-input" placeholder="${cfg.hasBotToken ? 'Leave blank to keep saved token' : '123456789:AAH...'}" autocomplete="off">
+          </label>
+          <label class="small">
+            <b>Telegram Chat / Channel ID</b>
+            <input id="tg-chat-id" type="text" class="alerts-input" placeholder="e.g. 123456789 or @mychannel" value="${esc(cfg.telegramChatId || '')}">
+          </label>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:.8rem;font-size:.82rem">
+          <label style="display:inline-flex;align-items:center;gap:.3rem"><input id="tg-enabled" type="checkbox" ${cfg.telegramEnabled || (!cfg.hasBotToken) ? 'checked' : ''}> <b>Enable Telegram Push</b></label>
+          <label style="display:inline-flex;align-items:center;gap:.3rem"><input id="tg-hedge" type="checkbox" ${cfg.notifyHedgeLock !== false ? 'checked' : ''}> 🛡️ Hedge-Lock Cashout</label>
+          <label style="display:inline-flex;align-items:center;gap:.3rem"><input id="tg-wins" type="checkbox" ${cfg.notifyWinningTickets !== false ? 'checked' : ''}> 🏆 Winning Slips</label>
+          <label style="display:inline-flex;align-items:center;gap:.3rem"><input id="tg-crashes" type="checkbox" ${cfg.notifyOddsCrash !== false ? 'checked' : ''}> 📉 Sharp Odds Crashes (-8%+)</label>
+          <label style="display:inline-flex;align-items:center;gap:.3rem"><input id="tg-daily" type="checkbox" ${cfg.notifyDailyCodes !== false ? 'checked' : ''}> 🇬🇭 Daily SportyBet Codes</label>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:.45rem">
+          <button type="button" class="btn primary" onclick="window.oracleSaveAlertConfig(this)">💾 Save Alert Settings</button>
+          <button type="button" class="btn" onclick="window.oracleTestAlert(this)">🔔 Send Test Alert</button>
+          <button type="button" class="btn btn-sporty" onclick="window.oraclePushDailyCodes(this)">📤 Push Today's Codes Now</button>
+        </div>
+      </section>
+
+      <section class="panel" style="margin:0;display:grid;gap:.65rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+          <h3 style="margin:0">📡 Live Alert Feed (${list.length})</h3>
+          ${state.alertState.unreadCount ? `<button type="button" class="btn" style="padding:.22rem .6rem;font-size:.76rem" onclick="window.oracleMarkAlertsRead()">✓ Mark All Read (${state.alertState.unreadCount})</button>` : ''}
+        </div>
+        <div style="display:grid;gap:.5rem;max-height:300px;overflow-y:auto;padding-right:.2rem">${feedHtml}</div>
+      </section>
+    </div>`;
+}
+
 // Global hooks for inline event handlers
 window.oracleCloseSlip = closeSlip;
 window.oracleRemoveSlip = removeFromSlip;
@@ -647,6 +887,7 @@ window.oracleCopyTicket = copyTicketText;
 window.oracleShareWhatsApp = shareTicketWhatsApp;
 window.oracleCopyCode = copyCodeString;
 window.oracleBookActiveSlip = bookActiveSlipOnSportyBet;
+window.oracleRebookClean = rebookCleanSportySlip;
 window.oracleAddPick = (pick) => { addToSlip(pick, true); };
 window.oracleSetSlipTab = (tab) => { state.slipDrawerTab = tab; renderSlip(); };
 window.oracleUpdateStake = (val) => { state.slipStake = Math.max(1, Number(val) || 10); renderSlip(); };
@@ -655,6 +896,7 @@ window.oracleAuditSportyCode = async () => {
   const code = inp?.value?.trim();
   if (!code) return;
   state.auditCodeInput = code;
+  state.rebookedAuditResult = null;
   try {
     state.auditedCodeResult = await api(`/api/sportybet/code/${encodeURIComponent(code)}`);
     renderSlip();
@@ -663,6 +905,84 @@ window.oracleAuditSportyCode = async () => {
     showToast(err.message, 'err');
   }
 };
+window.oracleEnableBrowserPush = async () => {
+  if (!('Notification' in window)) {
+    showToast('Desktop Notifications are not supported in this browser.', 'err');
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    localStorage.setItem('oracle_browser_push', '1');
+    showToast('✅ Browser Desktop Push Alerts enabled!', 'ok');
+  } else {
+    showToast('Notification permission was not granted.', 'err');
+  }
+  renderAlertsDialog();
+};
+window.oracleSaveAlertConfig = async (btn) => {
+  const tokenVal = $('#tg-bot-token')?.value?.trim() || '';
+  const chatId = $('#tg-chat-id')?.value?.trim() || '';
+  const payload = {
+    telegramChatId: chatId,
+    telegramEnabled: Boolean($('#tg-enabled')?.checked),
+    notifyHedgeLock: Boolean($('#tg-hedge')?.checked),
+    notifyWinningTickets: Boolean($('#tg-wins')?.checked),
+    notifyOddsCrash: Boolean($('#tg-crashes')?.checked),
+    notifyDailyCodes: Boolean($('#tg-daily')?.checked),
+  };
+  if (tokenVal) payload.telegramBotToken = tokenVal;
+  if (btn) btn.disabled = true;
+  try {
+    state.alertState = await api('/api/alerts/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    updateAlertsBadge(state.alertState.unreadCount || 0);
+    renderAlertsDialog();
+    showToast('✓ Saved Alert & Telegram Push configuration!', 'ok');
+  } catch (err) {
+    showToast('Failed to save settings: ' + err.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+};
+window.oracleTestAlert = async (btn) => {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/alerts/test', { method: 'POST' });
+    state.alertState = res.state;
+    updateAlertsBadge(state.alertState.unreadCount || 0);
+    renderAlertsDialog();
+    showToast(res.result?.telegramSent ? '✈️ Test Alert delivered to Telegram & Feed!' : '🔔 Test Alert added to Live Feed (configure Telegram token/chat ID for Telegram push)!', 'ok');
+  } catch (err) {
+    showToast('Test alert error: ' + err.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+};
+window.oraclePushDailyCodes = async (btn) => {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Pushing Codes…'; }
+  try {
+    const res = await api('/api/alerts/send-daily-codes', { method: 'POST' });
+    state.alertState = res.state;
+    updateAlertsBadge(state.alertState.unreadCount || 0);
+    renderAlertsDialog();
+    showToast(res.result?.telegramSent ? '🇬🇭 Pushed Today\'s SportyBet Codes to Telegram!' : '🇬🇭 Generated Today\'s SportyBet Codes Digest in Alert Feed!', 'ok');
+  } catch (err) {
+    showToast('Push error: ' + err.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '📤 Push Today\'s Codes Now'; }
+  }
+};
+window.oracleMarkAlertsRead = async () => {
+  try {
+    state.alertState = await api('/api/alerts/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    updateAlertsBadge(0);
+    renderAlertsDialog();
+  } catch { /* ignore */ }
+};
+$('#open-alerts')?.addEventListener('click', () => openAlertsDialog());
 
 // ---------- selector ----------
 
@@ -813,12 +1133,15 @@ $('#main').addEventListener('click', (e) => {
 
 const dialog = $('#detail');
 if (!('closedBy' in HTMLDialogElement.prototype)) {
-  dialog.addEventListener('click', (event) => {
-    if (event.target !== dialog) return;
-    const r = dialog.getBoundingClientRect();
-    const inside = r.top <= event.clientY && event.clientY <= r.bottom && r.left <= event.clientX && event.clientX <= r.right;
-    if (!inside) dialog.close();
-  });
+  const outside = (e, dlg) => {
+    const r = dlg.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  for (const dlg of document.querySelectorAll('dialog[closedby="any"]')) {
+    let pressedOutside = false;
+    dlg.addEventListener('pointerdown', (e) => { pressedOutside = outside(e, dlg); });
+    dlg.addEventListener('pointerup', (e) => { if (pressedOutside && outside(e, dlg)) dlg.close(); });
+  }
 }
 
 let detail = null;
@@ -968,30 +1291,81 @@ function renderDirectSportyStrip(sportySelections) {
   if (!sportySelections?.length) return '';
   const topSels = sportySelections
     .filter((s) => s.p >= 0.55 && s.sportyOdds >= 1.15 && !['cs', 'multiscore'].includes(s.marketKey))
-    .slice(0, 8);
+    .slice(0, 10);
   if (!topSels.length) return '';
   return `
     <section class="panel" style="border-left:4px solid #e41827">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.6rem">
-        <h3 style="margin:0">🇬🇭 Live SportyBet Ghana Direct-Bookable Markets <span class="muted">Tap to add real code-ready picks</span></h3>
+        <h3 style="margin:0">🇬🇭 Live SportyBet Ghana Direct-Bookable Markets (${sportySelections.length} Real Selections)</h3>
         <span class="tag ok">✓ Matched to Live SportyBet Feed</span>
       </div>
       <div class="sel-grid">
         ${topSels.map((s) => {
           const inSlip = state.slip.some((x) => x.id === s.id);
           const payload = JSON.stringify(s).replace(/"/g, '&quot;');
+          const om = s.oddsMovement;
           return `
             <button type="button" class="sel-btn ${inSlip ? 'in-slip' : ''}" data-slip-pick="${esc(s.id)}" data-slip-payload="${payload}">
               <span class="sel-lbl">${esc(s.sportyPick)} <span class="muted small">(${esc(s.sportyMarket)})</span></span>
               <span class="sel-meta">
                 <b>@${s.sportyOdds}</b>
                 <span class="muted">${pct(s.p)}</span>
+                ${om?.isSteamCrash ? `<span class="tag ok" style="font-size:.66rem">📉 -${om.dropPct}%</span>` : ''}
                 ${(s.edgePct || 0) >= 1.5 ? `<span class="tag value" style="font-size:.68rem">+${s.edgePct}% EV</span>` : ''}
                 <span class="sel-status" style="color:var(--brand);font-weight:700">${inSlip ? '✓ Slip' : '+ Slip'}</span>
               </span>
             </button>`;
         }).join('')}
       </div>
+    </section>`;
+}
+
+function renderLineupAndRefereePanel(li, g) {
+  if (!li) return '';
+  const renderSideXI = (sideObj, teamName) => {
+    if (!sideObj) return '';
+    const rotTxt = sideObj.rotatedCount != null
+      ? `${sideObj.rotatedCount} change${sideObj.rotatedCount === 1 ? '' : 's'} vs previous XI (${sideObj.retainedStarters}/11 retained)`
+      : sideObj.prevStartersCount
+        ? `Previous XI benchmarked (${sideObj.prevStartersCount} starters${sideObj.prevFormation ? ` · ${sideObj.prevFormation}` : ''})`
+        : 'Official XI posts ~60m pre-kickoff';
+    const startersLine = sideObj.confirmed && sideObj.starters?.length
+      ? `<div class="small" style="margin-top:.3rem;line-height:1.4"><b>Starting XI${sideObj.formation ? ` (${esc(sideObj.formation)})` : ''}:</b> ${sideObj.starters.map((p) => esc(p.name)).join(', ')}</div>`
+      : '';
+    const missingScorersLine = sideObj.missingTopScorers?.length
+      ? `<div class="small" style="color:var(--bad);margin-top:.2rem">⚠ Missing Top Scorer(s): ${sideObj.missingTopScorers.map((p) => `${esc(p.name)} (${p.goals}g)`).join(', ')}</div>`
+      : sideObj.topScorers?.length
+        ? `<div class="small muted" style="margin-top:.2rem">⚽ Season Top Scorers: ${sideObj.topScorers.slice(0, 3).map((p) => `${esc(p.name)} (${p.goals}g)`).join(', ')}</div>`
+        : '';
+    return `
+      <div style="background:var(--bg-alt);border:1px solid var(--border);border-radius:9px;padding:.6rem .75rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.35rem;flex-wrap:wrap">
+          <b>${esc(teamName)}</b>
+          <span class="tag ${sideObj.confirmed ? 'ok' : 'muted'}">${sideObj.confirmed ? '✅ Confirmed XI' : '⏳ Pre-Lineup Check'}</span>
+        </div>
+        <div class="small muted" style="margin-top:.15rem">${esc(rotTxt)}</div>
+        ${startersLine}
+        ${missingScorersLine}
+      </div>`;
+  };
+
+  const sp = li.seasonPropProfile;
+  return `
+    <section class="panel" style="border-left:4px solid var(--brand)">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.6rem">
+        <h3 style="margin:0">🧑‍⚖️ Lineups, Squad Rotation, Referee &amp; Official Season Prop Averages</h3>
+        <span class="tag ${li.lineupConfirmed ? 'ok' : 'pick'}">${esc(li.lineupStatusLabel || 'Pre-Match Veto Gate Active')}</span>
+      </div>
+      <div style="display:flex;gap:.55rem;flex-wrap:wrap;margin-bottom:.65rem;font-size:.82rem">
+        ${li.referee ? `<span class="tag">🧑‍⚖️ Referee: <b>${esc(li.referee.name)}</b>${li.referee.country ? ` (${esc(li.referee.country)})` : ''}</span>` : '<span class="tag muted">🧑‍⚖️ Referee: Pending official assignment</span>'}
+        ${li.stadium ? `<span class="tag">🏟️ ${esc(li.stadium.name)}${li.stadium.city ? `, ${esc(li.stadium.city)}` : ''}${li.stadium.capacity ? ` (${Number(li.stadium.capacity).toLocaleString()})` : ''}</span>` : ''}
+        ${sp ? `<span class="tag ok">📊 Combined Season Avgs: <b>${sp.combinedShotsAvg}</b> Shots · <b>${sp.combinedSotAvg}</b> SOT · <b>${sp.combinedCornersAvg}</b> Crn · <b>${sp.combinedCardsAvg}</b> Cards</span>` : ''}
+      </div>
+      <div class="cols">
+        ${renderSideXI(li.homeLineup, g.home.name)}
+        ${renderSideXI(li.awayLineup, g.away.name)}
+      </div>
+      ${li.funFacts?.length ? `<ul class="clean small muted" style="margin:.6rem 0 0">${li.funFacts.map((f) => `<li>📌 ${esc(f)}</li>`).join('')}</ul>` : ''}
     </section>`;
 }
 
@@ -1015,6 +1389,8 @@ function renderDetail() {
       ${bar(P.ensemble.probs, league.draws)}
 
       ${smartPickBanner(P.smart, g)}
+
+      ${renderLineupAndRefereePanel(data.lineupIntel, g)}
 
       ${renderDirectSportyStrip(data.sportySelections)}
 
@@ -1115,7 +1491,7 @@ async function runAi(force = false) {
 
 // ---------- AI Tickets & Live SportyBet Ghana Code View (Command Center + Rollover + Synthesizer) ----------
 
-function renderFlexDirectiveBanner(fd, legs = []) {
+function renderFlexDirectiveBanner(fd, legs = [], podSplits = null) {
   if (!fd) return '';
   const tierCls = fd.tier === 'MANDATORY_MAX_FLEX'
     ? 'tier-mandatory'
@@ -1127,8 +1503,34 @@ function renderFlexDirectiveBanner(fd, legs = []) {
 
   const n = legs.length;
   let podBtnsHtml = '';
-  if (n >= 24) {
-    const numPods = n >= 36 ? 4 : 3;
+  if (Array.isArray(podSplits) && podSplits.length >= 2) {
+    podBtnsHtml = `
+      <div style="margin-top:.35rem">
+        <div class="small" style="font-weight:800;margin-bottom:.2rem">🇬🇭 Pre-Booked SportyBet Ghana Pod Split Codes (Ready 6-Char Codes):</div>
+        <div class="pod-codes-grid">
+          ${podSplits.map((pod) => {
+            const podLegsJson = JSON.stringify(pod.legs || []).replace(/"/g, '&quot;');
+            return `
+              <div class="pod-code-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:.25rem">
+                  <b>✂️ ${esc(pod.podLabel || `Pod ${pod.podId}`)}</b>
+                  <span class="muted" style="font-size:.68rem">${esc(pod.legRange || `${pod.count} Games`)}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.3rem">
+                  <span class="pod-code-val">${esc(pod.shareCode || 'LIVE')}</span>
+                  <span style="font-weight:800;font-size:.76rem">@${fmtOdds(pod.totalSportyOdds)}</span>
+                </div>
+                <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+                  ${pod.shareCode ? `<button type="button" class="btn" style="padding:.16rem .42rem;font-size:.68rem" onclick="window.oracleCopyCode('${esc(pod.shareCode)}', this)">📋 Copy</button>` : ''}
+                  ${pod.shareURL ? `<a class="btn btn-sporty" style="padding:.16rem .45rem;font-size:.68rem;text-decoration:none" href="${esc(pod.shareURL)}" target="_blank" rel="noopener">🚀 Book</a>` : ''}
+                  <button type="button" class="btn" style="padding:.16rem .42rem;font-size:.68rem" onclick="window.oracleLoadTicket(${podLegsJson}, false, '${esc(pod.shareCode || '')}')">📥 Slip</button>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  } else if (n >= 20) {
+    const numPods = n >= 40 ? 4 : n >= 27 ? 3 : 2;
     const podSize = Math.ceil(n / numPods);
     const btns = [];
     for (let p = 0; p < numPods; p++) {
@@ -1163,8 +1565,14 @@ function renderFlexDirectiveBanner(fd, legs = []) {
 function renderTicketCard(t, highlight = false) {
   const legsHtml = (t.legs || []).map((leg, i) => {
     const evTag = (leg.edgePct || 0) >= 2.0 ? `<span class="tag value" style="font-size:.66rem;padding:.08rem .35rem">+${leg.edgePct}% EV</span>` : '';
-    const steamTag = (leg.steamPct || 0) >= 4.0 ? `<span class="tag ok" style="font-size:.66rem;padding:.08rem .35rem">📉 Steam</span>` : '';
+    const om = leg.oddsMovement;
+    const steamTag = om?.isSteamCrash
+      ? `<span class="tag ok" style="font-size:.66rem;padding:.08rem .35rem" title="Real observed SportyBet drop @${om.openOdds} → @${om.curOdds}">📉 -${om.dropPct}%</span>`
+      : (leg.steamPct || 0) >= 4.0
+        ? `<span class="tag ok" style="font-size:.66rem;padding:.08rem .35rem">📉 Steam</span>`
+        : '';
     const histLine = leg.historySummary || leg.historyBadge;
+    const luLine = leg.lineupBadge;
     return `
       <div class="ticket-leg" style="flex-wrap:wrap">
         <span style="flex:1.25;min-width:185px">
@@ -1179,6 +1587,7 @@ function renderTicketCard(t, highlight = false) {
         </span>
         <span class="leg-odds">@${leg.sportyOdds || leg.fairOdds}</span>
         ${histLine ? `<div style="flex-basis:100%;font-size:.7rem;color:var(--muted);padding-left:1rem;margin-top:.1rem">📜 ${esc(histLine)}</div>` : ''}
+        ${luLine ? `<div style="flex-basis:100%;font-size:.68rem;color:var(--good);padding-left:1rem;margin-top:.06rem">${esc(luLine)}</div>` : ''}
       </div>`;
   }).join('');
 
@@ -1206,12 +1615,13 @@ function renderTicketCard(t, highlight = false) {
       <div class="ticket-meta-strip">
         ${kickoffRel ? `<span class="tag">⏱ ${esc(kickoffRel)}</span>` : ''}
         ${histCount > 0 ? `<span class="tag ok">📜 ${histCount}/${t.count} History &amp; H2H Verified</span>` : ''}
+        ${Array.isArray(t.podSplits) && t.podSplits.length ? `<span class="tag ok">✂️ ${t.podSplits.length} Pod Codes Ready</span>` : ''}
         ${t.playAdvice ? `<span class="tag pick">💡 ${esc(t.playAdvice)}</span>` : ''}
         ${t.avgEdgePct != null && t.avgEdgePct > 0 ? `<span class="tag value">+${t.avgEdgePct}% Avg Edge</span>` : ''}
         ${t.recommendedBankrollPct ? `<span class="tag muted">Kelly Stake: ${t.recommendedBankrollPct}%</span>` : ''}
       </div>
 
-      ${renderFlexDirectiveBanner(t.flexDirective, t.legs || [])}
+      ${renderFlexDirectiveBanner(t.flexDirective, t.legs || [], t.podSplits)}
 
       ${renderSportyCodeBanner(t.shareCode, t.shareURL, t.count, fmtOdds(totalOdds))}
 
@@ -1225,6 +1635,7 @@ function renderTicketCard(t, highlight = false) {
 
       <div class="ticket-actions">
         <button class="btn primary" onclick="window.oracleLoadTicket(${legsPayload}, false, '${esc(t.shareCode || '')}')">📥 Load Slip</button>
+        <button class="btn" title="Strip any started/locked games & mint a fresh SportyBet Ghana code" onclick="window.oracleRebookClean({ shareCode: '${esc(t.shareCode || '')}', selections: ${legsPayload} }, this)">🧹 Clean Code</button>
         <button class="btn" title="Stack these picks onto your active slip" onclick="window.oracleLoadTicket(${legsPayload}, true)">➕ Stack</button>
         <button class="btn" title="Track in Live Arena against real-world results" onclick="window.oraclePlaceInArena(${ticketPayload})">🧪 Arena</button>
         <button class="btn btn-whatsapp" onclick="window.oracleShareWhatsApp(${ticketPayload})" title="Share full slip & code on WhatsApp">📲 Share</button>
@@ -1266,11 +1677,11 @@ function renderCommandHero(ov) {
       <div class="hero-card million">
         <div class="hero-kicker">
           <span>👑 20-Million+ (50-Game Max)</span>
-          <span>${mill ? `${mill.count}/50 Games` : 'Max 50 Games'}</span>
+          <span>${mill ? `${mill.count}/50 Games${mill.podSplits?.length ? ` · ${mill.podSplits.length} Pods` : ''}` : 'Max 50 Games'}</span>
         </div>
         ${mill ? `
           <div class="hero-big" style="color:#a855f7">Code: ${esc(mill.shareCode || 'LIVE')} <span style="font-size:.92rem;color:var(--text)">· @${fmtOdds(mill.totalSportyOdds)}</span></div>
-          <div class="small muted">History &amp; H2H Verified · Avg <b>${pct(mill.avgLegProb || 0.72)}</b> · 🛡️ <b>MUST FLEX</b></div>
+          <div class="small muted">History &amp; Lineup Vetted · Avg <b>${pct(mill.avgLegProb || 0.72)}</b> · 🛡️ <b>MUST FLEX + PODS</b></div>
           <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:auto">
             ${mill.shareCode ? `<button class="btn" style="padding:.32rem .6rem;font-size:.78rem" onclick="window.oracleCopyCode('${esc(mill.shareCode)}', this)">📋 Copy ${esc(mill.shareCode)}</button>` : ''}
             ${mill.shareURL ? `<a class="btn btn-sporty" style="padding:.32rem .65rem;font-size:.78rem" href="${esc(mill.shareURL)}" target="_blank" rel="noopener">🚀 Load 20M+</a>` : ''}
@@ -1286,7 +1697,7 @@ function renderCommandHero(ov) {
         </div>
         ${fast ? `
           <div class="hero-big">Code: ${esc(fast.shareCode || 'LIVE')} <span style="font-size:.95rem;color:var(--brand)">· @${fmtOdds(fast.totalSportyOdds)}</span></div>
-          <div class="small muted">${fast.count}-Fold nearest kickoffs · Plus <a href="#/props"><b>Throws, GK &amp; Shots Hub →</b></a></div>
+          <div class="small muted">${fast.count}-Fold nearest kickoffs · Plus <a href="#/props"><b>Props, 1H &amp; Players →</b></a></div>
           <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:auto">
             ${fast.shareCode ? `<button class="btn" style="padding:.32rem .6rem;font-size:.78rem" onclick="window.oracleCopyCode('${esc(fast.shareCode)}', this)">📋 Copy ${esc(fast.shareCode)}</button>` : ''}
             ${fast.shareURL ? `<a class="btn btn-sporty" style="padding:.32rem .65rem;font-size:.78rem" href="${esc(fast.shareURL)}" target="_blank" rel="noopener">🚀 Load</a>` : ''}
@@ -1317,7 +1728,7 @@ function renderCommandHero(ov) {
 async function renderTickets() {
   const main = $('#main');
   const win = state.ticketsTimeWindow || 'all';
-  main.innerHTML = `<p class="loading"><span class="spinner"></span> Checking team Last-15 form &amp; H2H history across SportyBet Ghana fixtures &amp; cooking Multi-Match Accumulators (strictly ≤ 50 Games · up to 20,000,000x+ Odds)…</p>`;
+  main.innerHTML = `<p class="loading"><span class="spinner"></span> Checking team Last-15 form, H2H history &amp; lineups across SportyBet Ghana fixtures &amp; cooking Multi-Match Accumulators + Pre-Booked Pod Codes (≤ 50 Games · up to 20,000,000x+ Odds)…</p>`;
 
   try {
     const [data, overview] = await Promise.all([
@@ -1333,6 +1744,7 @@ async function renderTickets() {
     const matchTicketCategory = (t, cat) => {
       if (cat === 'rollover') return ['Rollover Banker', 'Fast Cash'].includes(t.category);
       if (cat === 'million') return t.category === 'Multi-Match & 1M+' || t.category === 'Multi-Match & 20M+' || t.ticketType === 'million' || (t.count || 0) >= 25;
+      if (cat === 'combos') return t.category === 'Combo Shields' || t.ticketType === 'combos' || t.id === 'combo-shield-banker-8';
       if (cat === 'props') return t.category === 'Tactical Props' || t.ticketType === 'props' || t.id === 'identical-stats-8';
       if (cat === 'vhim') return ['Vhim Banker', 'Mega 20-Fold'].includes(t.category);
       if (cat === 'ev') return ['Positive EV', 'Correlated SGM'].includes(t.category) || t.id === 'value-ev-sniper-6' || t.id === 'correlated-sgm-6';
@@ -1352,7 +1764,7 @@ async function renderTickets() {
       return true;
     });
 
-    const featuredIds = ['daily-rollover-2x', 'twenty-million-mega-50', 'million-odds-grand-slam', 'value-ev-sniper-6'];
+    const featuredIds = ['daily-rollover-2x', 'combo-shield-banker-8', 'twenty-million-mega-50', 'million-odds-grand-slam', 'value-ev-sniper-6'];
     const curatedHtml = filtered.length
       ? filtered.map((t) => renderTicketCard(t, featuredIds.includes(t.id))).join('')
       : `<p class="empty">No tickets match "${esc(state.ticketSearch)}". Clear the search or switch category.</p>`;
@@ -1360,11 +1772,11 @@ async function renderTickets() {
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
         <div>
-          <h2 style="margin:0">🤖 Oracle Command Center — History-Verified Multi-Match AI Tickets &amp; 20M+ Codes</h2>
-          <p class="muted" style="margin:.25rem 0">Every match is checked against real <b>Last-15 Form, Venue Splits &amp; Head-to-Head (H2H) History</b> before selection — compounding from <b>2.00x Rollovers</b> up to <b>20,000,000x+ (20M+) within SportyBet's 50-Game Limit</b>.</p>
+          <h2 style="margin:0">🤖 Oracle Command Center — History &amp; Lineup-Vetted Multi-Match AI Tickets &amp; 20M+ Codes</h2>
+          <p class="muted" style="margin:.25rem 0">Every match is checked against real <b>Last-15 Form, H2H History, Starting XIs, Injuries &amp; Season Prop Averages</b> — with pre-booked 6-char <b>Pod A–D Codes</b> on all 20–50 game multis.</p>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
-          <a href="#/props" class="btn" style="border-color:var(--brand);color:var(--brand);font-weight:700;text-decoration:none">🥅 Throws, Goal Kicks &amp; Shots →</a>
+          <a href="#/props" class="btn" style="border-color:var(--brand);color:var(--brand);font-weight:700;text-decoration:none">🥅 Props, 1H &amp; Players →</a>
           <a href="#/arena" class="btn" style="border-color:var(--good);color:var(--good);font-weight:700;text-decoration:none">🧪 Live Results Arena →</a>
           <a href="#/vault" class="btn primary" style="text-decoration:none">🎯 20-Game CS Vault →</a>
           <button class="btn" id="refresh-tickets-btn">🔄 Refresh Codes</button>
@@ -1376,8 +1788,8 @@ async function renderTickets() {
       <div class="generator-box">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
           <div>
-            <h3 style="margin:0;font-size:1.08rem">⚡ Multi-Match &amp; 20-Million+ Synthesizer (2 to 50 Games SportyBet Max · Up to 20,000,000x+ Odds + Live Code)</h3>
-            <span class="small muted">Vets team Last-15 form &amp; direct H2H history first, enforces SportyBet Ghana's <b>50-Game maximum</b>, and computes your exact <b>Flex / Cut-X Directive</b> + Pod Splits.</span>
+            <h3 style="margin:0;font-size:1.08rem">⚡ Multi-Match &amp; 20-Million+ Synthesizer (2 to 50 Games SportyBet Max · Up to 20,000,000x+ Odds + Live Pod Codes)</h3>
+            <span class="small muted">Vets team Last-15 form, H2H history &amp; lineups first, enforces SportyBet Ghana's <b>50-Game maximum</b>, and pre-books <b>Pod A–D 6-char codes</b> on 20–50 leg multis.</span>
           </div>
           <button id="run-gen-btn" class="btn btn-sporty" style="padding:.6rem 1.1rem">🇬🇭 Synthesize &amp; Book SportyBet Code</button>
         </div>
@@ -1430,6 +1842,9 @@ async function renderTickets() {
               ['mixed', '🔀 Mixed Multi (All Markets)'],
               ['20m', '👑 50-Game 20M+ History-Verified Mega'],
               ['million', '🔥 High-Accuracy 1M+ Compounder'],
+              ['combos', '🛡️ Combo & "Or" Shields'],
+              ['1h', '⏱️ 1st Half Markets'],
+              ['player_props', '👤 Player Shots / SOT / Saves'],
               ['ou1.5', '🔁 Identical: All Over 1.5'],
               ['ou2.5', '🔁 Identical: All Over 2.5'],
               ['gg', '🔁 Identical: All GG (BTTS)'],
@@ -1476,6 +1891,7 @@ async function renderTickets() {
             ['all', 'All Tickets'],
             ['million', '👑 Multi-Match, 1M+ & 20M+'],
             ['rollover', '💰 Rollover & Fast-Cash'],
+            ['combos', '🛡️ Combo Shields'],
             ['props', '🥅 Shots, Throws & Props'],
             ['vhim', '🔥 Vhim & 20-Fold'],
             ['ev', '💎 +EV & Correlated SGM'],
@@ -1675,17 +2091,41 @@ async function renderVault() {
   }
 }
 
-// ---------- Market Surveillance, Bookmaker Insider & Match-Fixing Radar ----------
+// ---------- Market Surveillance, Bookmaker Insider & 15m Time-Series Odds-Drop Radar ----------
+
+function renderOddsSparklineSvg(points) {
+  if (!Array.isArray(points) || points.length < 2) return '';
+  const w = 150, h = 38, padX = 6, padY = 5;
+  const vals = points.map((p) => Number(p.odds ?? p[1]) || 1);
+  const minV = Math.min(...vals);
+  const maxV = Math.max(...vals);
+  const span = Math.max(maxV - minV, 0.02);
+  const sx = (i) => padX + (i / Math.max(points.length - 1, 1)) * (w - padX * 2);
+  const sy = (v) => h - padY - ((v - minV) / span) * (h - padY * 2);
+  const poly = vals.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(' ');
+  const firstY = sy(vals[0]).toFixed(1);
+  const lastY = sy(vals[vals.length - 1]).toFixed(1);
+  return `
+    <svg viewBox="0 0 ${w} ${h}" class="sparkline-svg" role="img" aria-label="SportyBet odds drop sparkline">
+      <polyline points="${poly}" fill="none" stroke="var(--good)" stroke-width="2.2" />
+      <circle cx="${sx(0).toFixed(1)}" cy="${firstY}" r="2.8" fill="var(--muted)" />
+      <circle cx="${sx(vals.length - 1).toFixed(1)}" cy="${lastY}" r="3.4" fill="var(--good)" />
+    </svg>`;
+}
 
 async function renderRadar() {
   const main = $('#main');
-  main.innerHTML = `<p class="loading"><span class="spinner"></span> Scanning global SportyBet/BetRadar feeds & ESPN lines for bookmaker insider slashes, abnormal draws & syndicate steam…</p>`;
+  main.innerHTML = `<p class="loading"><span class="spinner"></span> Scanning SportyBet Ghana 15-minute time-series odds snapshots, BetRadar feeds &amp; ESPN lines for insider slashes, abnormal draws &amp; syndicate steam…</p>`;
 
   try {
-    const data = await api('/api/intelligence');
+    const [data, oddsMov] = await Promise.all([
+      api('/api/intelligence'),
+      api('/api/odds-movements').catch(() => null),
+    ]);
     if (state.view !== 'radar') return;
 
     const allAnomalies = data.anomalies || [];
+    const trackerStats = oddsMov?.stats || null;
     state.radarAnomaliesById = {};
     allAnomalies.forEach((a) => { state.radarAnomaliesById[a.id] = a; });
 
@@ -1695,6 +2135,7 @@ async function renderRadar() {
       : allAnomalies.filter((a) => a.type === activeFilter);
 
     const typeMeta = {
+      sporty_time_series_crash: { icon: '📉', label: 'Live 15m SportyBet Time-Series Odds Crash' },
       biscotto_draw: { icon: '🤝', label: 'Abnormal Draw ("Biscotto" / Stalemate Alert)' },
       liability_slash: { icon: '🚨', label: 'Syndicate Liability Slash (Odds Cut)' },
       goals_fixing_alert: { icon: '⚽', label: 'Extreme Goals Crash (Defensive Collapse)' },
@@ -1710,6 +2151,7 @@ async function renderRadar() {
       const pick = a.recommendedPick;
       const pickJson = pick ? JSON.stringify(pick).replace(/"/g, '&quot;') : '';
       const dossier = state.investigations?.[a.id] || a.forensicDossier;
+      const od = a.oddsDrop;
 
       return `
         <div class="radar-card ${a.severity}">
@@ -1723,6 +2165,15 @@ async function renderRadar() {
           </div>
 
           <div class="radar-detail">${esc(a.detail)}</div>
+
+          ${od && od.points?.length >= 2 ? `
+            <div class="ts-crash-strip">
+              <div>
+                <div class="small" style="font-weight:800;color:var(--good)">📉 @${od.openOdds} → @${od.curOdds} (-${od.dropPct}% Drop · +${od.impliedJumpPct}% Prob)</div>
+                <div class="small muted">${od.snapshotsCount} real SportyBet snapshots over ${od.elapsedHours}h</div>
+              </div>
+              ${renderOddsSparklineSvg(od.points)}
+            </div>` : ''}
 
           ${pick ? `
             <div class="insider-pick-box">
@@ -1751,13 +2202,19 @@ async function renderRadar() {
             ${dossier ? renderInvestigationResult(dossier, a) : ''}
           </div>
         </div>`;
-    }).join('') : `<p class="muted">No anomalies matching this filter.</p>`;
+    }).join('') : `<p class="muted">No anomalies matching this filter yet (15-minute time-series recorder continuously snapshots upcoming SportyBet Ghana lines).</p>`;
 
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1.25rem">
         <div>
-          <h2 style="margin:0">🚨 Bookmaker Insider, Syndicate Steam & Match-Fixing Radar</h2>
-          <p class="muted" style="margin:.25rem 0">Checks how and why betting companies slash odds before games play: scans 250+ global matches for <b>Liability Slashes</b>, <b>"Biscotto" Draw Compression (@2.10–@2.95)</b>, <b>Goals Crashes</b>, and <b>Bookmaker vs Stats Divergences</b>.</p>
+          <h2 style="margin:0">🚨 Bookmaker Insider, 15m SportyBet Time-Series Odds-Drop &amp; Match-Fixing Radar</h2>
+          <p class="muted" style="margin:.25rem 0">Continuously records SportyBet Ghana odds every 15 minutes to catch <b>Real Multi-Snapshot Odds Crashes</b> alongside <b>Liability Slashes</b>, <b>"Biscotto" Draw Compression (@2.10–@2.95)</b>, and <b>Goals Crashes</b>.</p>
+          ${trackerStats ? `<div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.35rem">
+            <span class="tag ok">⏱ 15m Time-Series Recorder Active</span>
+            <span class="tag">📊 ${trackerStats.eventsTracked || 0} Fixtures Tracked</span>
+            <span class="tag">📈 ${(trackerStats.selectionsTracked || 0).toLocaleString()} Selections Monitored</span>
+            <span class="tag pick">📉 ${trackerStats.multiPointSelections || 0} Multi-Snapshot Series</span>
+          </div>` : ''}
         </div>
       </div>
 
@@ -1771,6 +2228,7 @@ async function renderRadar() {
         <div class="filters" role="group">
           ${[
             ['all', `All Signals (${allAnomalies.length})`],
+            ['sporty_time_series_crash', '📉 Live 15m Odds Crashes'],
             ['liability_slash', '🚨 Liability Slash'],
             ['biscotto_draw', '🤝 Abnormal Draw ("Biscotto")'],
             ['goals_fixing_alert', '⚽ Extreme Goals Crash'],
@@ -1882,7 +2340,9 @@ async function renderPicks() {
               <div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-top:.25rem">
                 <span class="tag" style="font-size:.68rem">${esc(p.group || 'Main')}</span>
                 ${edge > 0 ? `<span class="tag value" style="font-size:.7rem">+${edge}% EV</span>` : ''}
-                ${(p.steamPct || 0) >= 4 ? `<span class="tag ok" style="font-size:.7rem">📉 Steam</span>` : ''}
+                ${p.oddsMovement?.isSteamCrash
+                  ? `<span class="tag ok" style="font-size:.7rem" title="@${p.oddsMovement.openOdds} → @${p.oddsMovement.curOdds}">📉 -${p.oddsMovement.dropPct}%</span>`
+                  : (p.steamPct || 0) >= 4 ? `<span class="tag ok" style="font-size:.7rem">📉 Steam</span>` : ''}
                 ${p.kellyPct ? `<span class="tag muted" style="font-size:.7rem">Kelly ${p.kellyPct}%</span>` : ''}
               </div>
             </div>
@@ -1892,7 +2352,8 @@ async function renderPicks() {
               <div class="small muted">Fair: @${p.fairOdds || fairOdds(p.p)}</div>
             </div>
           </div>
-          ${(p.historySummary || p.historyBadge) ? `<div class="prop-rationale" style="font-size:.75rem;color:var(--good);margin-bottom:.35rem">📜 ${esc(p.historySummary || p.historyBadge)}</div>` : ''}
+          ${(p.historySummary || p.historyBadge) ? `<div class="prop-rationale" style="font-size:.75rem;color:var(--good);margin-bottom:.25rem">📜 ${esc(p.historySummary || p.historyBadge)}</div>` : ''}
+          ${p.lineupBadge ? `<div class="small" style="font-size:.72rem;color:var(--brand);margin-bottom:.35rem">${esc(p.lineupBadge)}</div>` : ''}
           <button type="button" class="btn ${inSlip ? 'primary' : ''}" data-slip-pick="${esc(pickId)}" data-slip-payload="${payload}" style="width:100%">
             <span class="sel-status">${inSlip ? '✓ In Slip' : '+ Add to Slip'}</span>
           </button>
@@ -1902,11 +2363,11 @@ async function renderPicks() {
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:.85rem">
         <div>
-          <h2 style="margin:0">⚡ Best Picks &amp; +EV Value Scanner (History-Verified)</h2>
-          <p class="muted" style="margin:.25rem 0">De-vigged ensemble probabilities vetted against real <b>Last-15 Team Form, Venue Splits &amp; H2H History</b> across SportyBet Ghana fixtures — Main, Goals, Shots/SOT, Corners, Cards &amp; Throws.</p>
+          <h2 style="margin:0">⚡ Best Picks &amp; +EV Value Scanner (History &amp; Lineup-Vetted)</h2>
+          <p class="muted" style="margin:.25rem 0">De-vigged ensemble probabilities vetted against real <b>Last-15 Form, H2H History, Starting XIs, Injuries &amp; Season Prop Profiles</b> across SportyBet Ghana fixtures.</p>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
-          <a href="#/props" class="btn" style="text-decoration:none">🥅 Dedicated Throws, GK &amp; Shots Hub →</a>
+          <a href="#/props" class="btn" style="text-decoration:none">🥅 Props, 1H &amp; Players Hub →</a>
           <button id="book-top5-btn" class="btn btn-sporty" ${visiblePicks.length === 0 ? 'disabled' : ''}>🇬🇭 Book Top 5 Live Code</button>
           <button id="add-top5-btn" class="btn primary" ${visiblePicks.length === 0 ? 'disabled' : ''}>➕ Add Top 5 to Slip</button>
         </div>
@@ -1918,7 +2379,10 @@ async function renderPicks() {
             ${[
               ['all', '🌐 All Sections'],
               ['Main', '🏆 Main (1X2 / 1UP / DC)'],
+              ['Combos', '🛡️ Combo & "Or" Shields'],
+              ['1st Half', '⏱️ 1st Half'],
               ['Goals', '⚽ Goals & GG'],
+              ['Player Props', '👤 Player Props'],
               ['props', '🥅 All Match Props'],
               ['Shots', '🎯 Shots & SOT'],
               ['Corners', '🚩 Corners'],
@@ -1927,7 +2391,7 @@ async function renderPicks() {
               ['Offsides & fouls', '🚩 Fouls & Offsides'],
             ].map(([k, lbl]) => `<button type="button" class="chip" data-pick-grp="${esc(k)}" aria-pressed="${grp === k}">${lbl}</button>`).join('')}
           </div>
-          <input id="picks-search-input" class="search-input" type="search" placeholder="🔍 Filter team, league, or market…" value="${esc(state.picksSearch || '')}">
+          <input id="picks-search-input" class="search-input" type="search" placeholder="🔍 Filter team, player, league, or market…" value="${esc(state.picksSearch || '')}">
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
           <div class="filters" role="group" aria-label="Time window">
@@ -2030,14 +2494,14 @@ async function renderPicks() {
   }
 }
 
-// ---------- High-Accuracy Throws, Goal Kicks, Shots, SOT, Corners, Cards & Fouls Hub (#/props) ----------
+// ---------- High-Accuracy Throws, Goal Kicks, Shots, SOT, Player Props, Combo Shields & 1st Half Hub (#/props) ----------
 
 async function renderProps() {
   const main = $('#main');
   const cat = state.propsCategory || 'all';
   const minP = state.propsMinP || 0.65;
   const win = state.propsWindow || 'all';
-  main.innerHTML = `<p class="loading"><span class="spinner"></span> Computing high-accuracy Throw-Ins, Goal Kicks, Shots, SOT, Corners, Cards &amp; Fouls predictions (picking only likely winners)…</p>`;
+  main.innerHTML = `<p class="loading"><span class="spinner"></span> Extracting deep per-match SportyBet Ghana Player Props, Combo Shields, 1st Half, Throw-Ins, Goal Kicks, Shots &amp; SOT…</p>`;
 
   try {
     const data = await api(`/api/props?category=${encodeURIComponent(cat)}&minP=${minP}&window=${encodeURIComponent(win)}`);
@@ -2053,6 +2517,9 @@ async function renderProps() {
       : allProps;
 
     const catIconMap = {
+      player_props: '👤 Player Props',
+      combos: '🛡️ Combo Shields',
+      first_half: '⏱️ 1st Half',
       throwins: '🤾 Throw-Ins',
       goalkicks: '🥅 Goal Kicks',
       shots: '🎯 Shots & SOT',
@@ -2086,6 +2553,7 @@ async function renderProps() {
               ? `<span class="tag ok">🇬🇭 Live SportyBet Code Ready</span>`
               : `<span class="tag">📊 Tactical High-Accuracy Prop</span>`}
             ${p.expectedLine ? `<span class="tag muted">${esc(p.expectedLine)}</span>` : ''}
+            ${p.lineupBadge ? `<span class="tag ok">${esc(p.lineupBadge)}</span>` : ''}
           </div>
           <div class="pick-card-market">
             <div>
@@ -2110,8 +2578,8 @@ async function renderProps() {
     main.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
         <div>
-          <h2 style="margin:0">🥅 High-Accuracy Throws, Goal Kicks, Shots, Corners &amp; Tactical Props</h2>
-          <p class="muted" style="margin:.25rem 0">Strict high-accuracy filter: we discard 50/50 coin-flips and surface <b>only match-stat picks with high win likelihood (${Math.round(minP * 100)}%+ to 90%+)</b> across Throw-Ins, Goal Kicks, Total Shots, Shots on Target (SOT), Corners, Bookings &amp; Fouls.</p>
+          <h2 style="margin:0">🥅 Deep SportyBet Props, Player Shots/SOT, Combo Shields, 1st Half, Throws &amp; Goal Kicks</h2>
+          <p class="muted" style="margin:.25rem 0">Unlocks 200–650+ real markets per game from SportyBet Ghana's full event feed — filtering strictly for <b>high-accuracy picks (${Math.round(minP * 100)}%+ to 90%+)</b> across Player Props, Combo Shields, 1st Half, Throw-Ins, Goal Kicks, Shots, Corners &amp; Cards.</p>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
           <button id="book-top-props-btn" class="btn btn-sporty" ${!counts.bookable ? 'disabled' : ''}>🇬🇭 Book Top SportyBet Props Code</button>
@@ -2131,15 +2599,18 @@ async function renderProps() {
             ${[
               ['all', `🌐 All High-Accuracy (${counts.all || 0})`],
               ['bookable', `🇬🇭 SportyBet Code-Ready (${counts.bookable || 0})`],
-              ['throwins', `🤾 Throw-Ins (${counts.throwins || 0})`],
-              ['goalkicks', `🥅 Goal Kicks (${counts.goalkicks || 0})`],
+              ['player_props', `👤 Player Props (${counts.player_props || 0})`],
+              ['combos', `🛡️ Combo Shields (${counts.combos || 0})`],
+              ['first_half', `⏱️ 1st Half (${counts.first_half || 0})`],
               ['shots', `🎯 Shots & SOT (${counts.shots || 0})`],
               ['corners', `🚩 Corners (${counts.corners || 0})`],
               ['cards', `🟨 Bookings / Cards (${counts.cards || 0})`],
+              ['throwins', `🤾 Throw-Ins (${counts.throwins || 0})`],
+              ['goalkicks', `🥅 Goal Kicks (${counts.goalkicks || 0})`],
               ['fouls_offsides', `🚩 Fouls & Offsides (${counts.fouls_offsides || 0})`],
             ].map(([k, lbl]) => `<button type="button" class="chip" data-prop-cat="${k}" aria-pressed="${cat === k}">${lbl}</button>`).join('')}
           </div>
-          <input id="props-search-input" class="search-input" type="search" placeholder="🔍 Search match, team, or stat…" value="${esc(state.propsSearch || '')}">
+          <input id="props-search-input" class="search-input" type="search" placeholder="🔍 Search match, player, team, or stat…" value="${esc(state.propsSearch || '')}">
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
           <div class="filters" role="group" aria-label="Minimum Accuracy">
@@ -2680,7 +3151,7 @@ async function renderArena(forceSync = false, silent = false) {
           </div>
 
           ${t.shareCode ? renderSportyCodeBanner(t.shareCode, t.shareURL, t.count, t.totalSportyOdds) : ''}
-          ${t.flexDirective ? renderFlexDirectiveBanner(t.flexDirective, t.legs) : ''}
+          ${t.flexDirective ? renderFlexDirectiveBanner(t.flexDirective, t.legs, t.podSplits) : ''}
 
           <div class="ticket-stats" style="grid-template-columns:repeat(4,1fr)">
             <div><span>Folds / Odds</span><b>${t.count} · @${fmtOdds(t.totalSportyOdds)}</b></div>
@@ -2711,7 +3182,10 @@ async function renderArena(forceSync = false, silent = false) {
 
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;padding-top:.4rem;font-size:.82rem">
             <span class="muted">Full Acca Potential: <b>₵${(t.potentialWinGHS || 0).toLocaleString()}</b> · Flex Cut-1/2 Payout: <b style="color:${(t.flexPayoutGHS || 0) > 0 ? 'var(--good)' : 'var(--muted)'}">₵${(t.flexPayoutGHS || 0).toLocaleString()}</b></span>
-            <button type="button" class="btn" style="padding:.25rem .65rem" onclick="window.oracleLoadTicket(${JSON.stringify(t.legs || []).replace(/"/g, '&quot;')}, false, '${esc(t.shareCode || '')}')">📥 Load in Slip Centre</button>
+            <div style="display:flex;gap:.35rem;flex-wrap:wrap">
+              <button type="button" class="btn" style="padding:.25rem .65rem" title="Strip started games & mint a fresh SportyBet Ghana code for the remaining active legs" onclick="window.oracleRebookClean({ shareCode: '${esc(t.shareCode || '')}', selections: ${JSON.stringify(t.legs || []).replace(/"/g, '&quot;')} }, this)">🧹 Clean Active Code</button>
+              <button type="button" class="btn" style="padding:.25rem .65rem" onclick="window.oracleLoadTicket(${JSON.stringify(t.legs || []).replace(/"/g, '&quot;')}, false, '${esc(t.shareCode || '')}')">📥 Load in Slip Centre</button>
+            </div>
           </div>
         </div>`;
     }).join('');
@@ -3059,6 +3533,8 @@ async function init() {
     window.addEventListener('hashchange', route);
     updateSlipBadge();
     ensureSlipVaultLoaded();
+    pollAlertsBackground(true);
+    setInterval(() => pollAlertsBackground(false), 45000);
     route();
   } catch (err) {
     $('#main').innerHTML = `<p class="error">Could not reach the server: ${esc(err.message)}</p>`;

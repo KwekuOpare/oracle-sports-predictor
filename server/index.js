@@ -15,6 +15,9 @@ import * as tickets from './tickets.js';
 import * as intelligence from './intelligence.js';
 import * as sportybet from './sportybet.js';
 import * as arena from './arena.js';
+import * as lineups from './lineups.js';
+import * as oddsTracker from './odds-tracker.js';
+import * as alerts from './alerts.js';
 
 const app = express();
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,14 +86,20 @@ app.get('/api/game/:league/:id', wrap(async (req, res) => {
     predictFull(league, model, game, { markets: true }),
     sportybet.findSportyEventForGame(game).catch(() => null),
   ]);
-  const sportyBookable = sportyEv ? sportybet.extractBookableSelections(sportyEv, prediction) : [];
+  const fullSportyEv = sportyEv ? (await sportybet.getSportyEventDetail(sportyEv.eventId).catch(() => null)) || sportyEv : null;
+  const [sportyBookable, lineupIntel] = await Promise.all([
+    Promise.resolve(fullSportyEv ? sportybet.extractBookableSelections(fullSportyEv, prediction) : []),
+    fullSportyEv ? lineups.inspectMatchLineupAndReferee(fullSportyEv, summary).catch(() => null) : Promise.resolve(null),
+  ]);
   res.json({
     league: leagueInfo(league),
     game,
     prediction,
     summary,
-    sportyEvent: sportyEv ? { eventId: sportyEv.eventId, gameId: sportyEv.gameId, selectionsCount: sportyBookable.length } : null,
+    lineupIntel,
+    sportyEvent: fullSportyEv ? { eventId: fullSportyEv.eventId, gameId: fullSportyEv.gameId, selectionsCount: sportyBookable.length } : null,
     sportySelections: sportyBookable,
+    oddsHistory: fullSportyEv ? oddsTracker.getEventOddsHistory(fullSportyEv.eventId) : null,
     model: modelInfo(model),
     aiEnabled: aiEnabled(),
   });
@@ -155,7 +164,7 @@ app.get('/api/picks', wrap(async (req, res) => {
         !['cs', 'multiscore'].includes(s.marketKey) &&
         (!evOnly || (s.edgePct || 0) > 0) &&
         (groupFilter === 'all' ||
-          (groupFilter === 'props' && ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls'].includes(s.group)) ||
+          (groupFilter === 'props' && ['Shots', 'Corners', 'Cards', 'Throws & Goal Kicks', 'Offsides & fouls', 'Player Props'].includes(s.group)) ||
           s.group === groupFilter)
       )
       .sort((a, b) =>
@@ -189,7 +198,7 @@ app.get('/api/picks', wrap(async (req, res) => {
   res.json({ minP, timeWindow, sortMode, groupFilter, picks: picks.slice(0, 240), errors: [] });
 }));
 
-// Dedicated High-Accuracy Match-Stat Props Hub (Throws, Goal Kicks, Shots, SOT, Corners, Cards, Offsides & Fouls)
+// Dedicated High-Accuracy Match-Stat, Player Prop, 1st-Half & Combo Shield Hub
 app.get('/api/props', wrap(async (req, res) => {
   const category = req.query.category || 'all';
   const minP = Math.min(0.92, Math.max(0.52, Number(req.query.minP) || 0.65));
@@ -201,7 +210,7 @@ app.get('/api/props', wrap(async (req, res) => {
   res.json(hub);
 }));
 
-// Pre-compiled accumulator tickets (with real 6-character SportyBet Ghana booking codes)
+// Pre-compiled accumulator tickets (with real 6-character SportyBet Ghana booking codes + Pre-Booked Pod A-D codes)
 app.get('/api/tickets', wrap(async (req, res) => {
   const timeWindow = req.query.window || 'all';
   const t = await tickets.getCuratedTickets(req.query.force === '1', timeWindow);
@@ -219,6 +228,7 @@ app.get('/api/overview', wrap(async (req, res) => {
     sportybet.getSportyCatalog(false).catch(() => []),
   ]);
   const findTicket = (id) => curated.find((x) => x.id === id) || null;
+  const alertState = alerts.getPublicAlertState();
   res.json({
     updatedAt: new Date().toISOString(),
     upcomingCount: sportyCat.length,
@@ -226,6 +236,7 @@ app.get('/api/overview', wrap(async (req, res) => {
     fastCashTicket: findTicket('fast-cash-soon') || curated[1] || null,
     vhimTicket: findTicket('vhim-banker-5') || curated[2] || null,
     valueSniperTicket: findTicket('value-ev-sniper-6') || null,
+    comboShieldTicket: findTicket('combo-shield-banker-8') || null,
     twentyMillionTicket: findTicket('twenty-million-mega-50') || null,
     millionTicket: findTicket('twenty-million-mega-50') || findTicket('million-odds-grand-slam') || findTicket('super-multi-30') || null,
     propsTicket: findTicket('tactical-props-sniper-8') || null,
@@ -235,10 +246,12 @@ app.get('/api/overview', wrap(async (req, res) => {
     anomalyCount: anomalies?.length || 0,
     arenaSummary: arenaSnap?.summary || null,
     equityCurve: arenaSnap?.equityCurve || null,
+    alertsUnread: alertState.unreadCount || 0,
+    oddsTrackerStats: oddsTracker.getOddsTrackerStats(),
   });
 }));
 
-// Custom ticket & multi-variation synthesizer (up to 60 folds / 1,000,000+ odds + same-game multi + real SportyBet code)
+// Custom ticket & multi-variation synthesizer (up to 50 folds / 20,000,000+ odds + same-game multi + real SportyBet code)
 app.post('/api/tickets/generate', wrap(async (req, res) => {
   const result = await tickets.generateCustom(req.body || {});
   if (result?.variations?.length) {
@@ -282,10 +295,111 @@ app.post('/api/sportybet/book', wrap(async (req, res) => {
   res.json(result);
 }));
 
+// 1-Click Strip Started / Locked Games & Re-Book Fresh 6-Char SportyBet Ghana Code
+app.post('/api/sportybet/rebook-clean', wrap(async (req, res) => {
+  const result = await sportybet.stripStartedAndRebook({
+    shareCode: req.body?.shareCode || null,
+    selections: Array.isArray(req.body?.selections) ? req.body.selections : null,
+  });
+  if (result.ok && result.activeSelections?.length) {
+    const cleanLegs = result.activeSelections.map((s) => ({
+      id: `${s.eventId}:${s.marketId}:${s.outcomeId}`,
+      eventId: s.eventId,
+      sportyGameId: s.gameId,
+      matchup: s.matchup,
+      home: s.home,
+      away: s.away,
+      leagueName: s.leagueName,
+      date: s.date,
+      startTime: s.estimateStartTime,
+      market: s.marketName,
+      sportyMarket: s.marketName,
+      label: `${s.marketName}: ${s.pick}`,
+      sportyPick: s.pick,
+      sportyOdds: Number(s.odds) || 1.4,
+      fairOdds: Number(s.odds) || 1.4,
+      p: s.probability || +(1 / Math.max(1.05, Number(s.odds) || 1.4) * 0.94).toFixed(4),
+      sportySelection: s.sportySelection,
+    }));
+    arena.registerTickets([{
+      arenaId: `arena-clean-${result.shareCode || Date.now()}`,
+      id: `clean-${result.shareCode || Date.now()}`,
+      title: `🧹 Clean Re-Booked Slip (${cleanLegs.length}-Fold)`,
+      category: 'Clean Re-Booked Slip',
+      description: `Stripped ${result.removedCount || 0} started/locked match(es) and minted fresh SportyBet Ghana code ${result.shareCode}.`,
+      source: 'user_placed',
+      shareCode: result.shareCode,
+      shareURL: result.shareURL,
+      stakeGHS: Number(req.body?.stakeGHS) || 100,
+      totalSportyOdds: result.totalSportyOdds,
+      legs: cleanLegs,
+    }], { source: 'user_placed' }).catch(() => {});
+  }
+  res.json(result);
+}));
+
 // Load & audit any existing SportyBet Ghana Booking Code (e.g. "9YG45J")
 app.get('/api/sportybet/code/:code', wrap(async (req, res) => {
   const audited = await sportybet.loadSportyBookingCode(req.params.code);
   res.json(audited);
+}));
+
+// Real Confirmed Lineups, Squad Rotation, Injuries, Referee & Season Prop Profile for a SportyBet Event
+app.get('/api/lineups/:eventId', wrap(async (req, res) => {
+  const eventId = req.params.eventId;
+  const cat = await sportybet.getSportyCatalog(false);
+  let ev = cat.find((x) => x.eventId === eventId);
+  if (!ev) {
+    ev = await sportybet.getSportyEventDetail(eventId);
+  }
+  if (!ev) {
+    return res.status(404).json({ error: 'Event not found in SportyBet catalog' });
+  }
+  const espnSum = await tickets.getEspnSummaryForSportyEvent(eventId).catch(() => null);
+  const intel = await lineups.inspectMatchLineupAndReferee(ev, espnSum);
+  res.json({ ok: true, eventId, lineupIntel: intel });
+}));
+
+// Real 15-Minute SportyBet Ghana Odds-Drop Time-Series Telemetry
+app.get('/api/odds-movements', wrap(async (req, res) => {
+  const minDrop = Math.max(1.5, Number(req.query.minDrop) || 4.0);
+  const limit = Math.min(100, Math.max(5, Number(req.query.limit) || 50));
+  res.json({
+    stats: oddsTracker.getOddsTrackerStats(),
+    drops: oddsTracker.getSignificantOddsDrops({ minDropPct: minDrop, limit }),
+  });
+}));
+
+app.get('/api/odds-movements/:eventId', wrap(async (req, res) => {
+  const history = oddsTracker.getEventOddsHistory(req.params.eventId);
+  res.json({ ok: Boolean(history), eventId: req.params.eventId, history });
+}));
+
+// Instant Telegram + Browser Push Alert Engine Endpoints
+app.get('/api/alerts', wrap(async (req, res) => {
+  res.json(alerts.getPublicAlertState());
+}));
+
+app.post('/api/alerts/config', wrap(async (req, res) => {
+  const state = alerts.updateAlertConfig(req.body || {});
+  res.json({ ok: true, ...state });
+}));
+
+app.post('/api/alerts/read', wrap(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
+  const state = alerts.markAlertsRead(ids);
+  res.json({ ok: true, ...state });
+}));
+
+app.post('/api/alerts/test', wrap(async (req, res) => {
+  const result = await alerts.sendTestAlert();
+  res.json({ ok: true, result, state: alerts.getPublicAlertState() });
+}));
+
+app.post('/api/alerts/send-daily-codes', wrap(async (req, res) => {
+  const curated = await tickets.getCuratedTickets(false, 'all');
+  const result = await alerts.sendDailyCodesDigest(curated, { manual: true });
+  res.json({ ok: Boolean(result), result, state: alerts.getPublicAlertState() });
 }));
 
 // Live Cooked-Odds & Ticket Verification Arena (places all cooked odds & tests against real-world live/final results)
@@ -323,7 +437,13 @@ app.get('/api/intelligence', wrap(async (req, res) => {
   if (insiderTicket?.legs?.length) {
     arena.registerTickets([insiderTicket], { source: 'live_cooked', defaultStakeGHS: 100 }).catch(() => {});
   }
-  res.json({ anomalies, insiderTicket, count: anomalies.length, aiEnabled: aiEnabled() });
+  res.json({
+    anomalies,
+    insiderTicket,
+    count: anomalies.length,
+    oddsTracker: oddsTracker.getOddsTrackerStats(),
+    aiEnabled: aiEnabled(),
+  });
 }));
 
 // Deep forensic & AI integrity investigation (works for both global SportyBet and ESPN anomalies)
@@ -371,6 +491,12 @@ async function prewarmSystem() {
     console.warn('[prewarm] non-fatal warning:', err.message);
   }
 }
+
+process.on('SIGINT', () => {
+  oddsTracker.flushOddsHistory();
+  alerts.flushAlerts();
+  process.exit(0);
+});
 
 const PORT = Number(process.env.PORT) || 3456;
 app.listen(PORT, () => {

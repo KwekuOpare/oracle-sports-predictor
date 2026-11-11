@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>Oracle — AI Sports Predictor & SportyBet Ghana Code Generator</title>
-  <meta name="description" content="Self-learning AI sports predictor with Last-15 Form & H2H History Verification, live SportyBet Ghana booking code generation up to 50 Games & 20,000,000x+ (20M+) Odds, Flex Directives, Throws/Goal-Kicks/Shots Props Hub, Correct Score Vault, and Live Arena." />
+  <meta name="description" content="Self-learning AI sports predictor with Last-15 Form & H2H History Verification, Confirmed Lineups & Referee Veto Gate, 15m SportyBet Odds-Drop Recorder, Pre-Booked Pod Codes up to 50 Games & 20M+ Odds, Player Props, and Live Telegram/Browser Alerts." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔮</text></svg>" />
   <link rel="preconnect" href="https://a.espncdn.com" />
-  <link rel="stylesheet" href="/styles.css?v=20261111b" />
-  <script type="module" src="/app.js?v=20261111b"></script>
+  <link rel="stylesheet" href="/styles.css?v=20261111c" />
+  <script type="module" src="/app.js?v=20261111c"></script>
 </head>
 <body>
   <header class="topbar">
@@ -19,7 +19,7 @@
     </a>
     <nav class="views" aria-label="Main">
       <a href="#/tickets" data-view="tickets">🤖 AI Tickets & Codes</a>
-      <a href="#/props" data-view="props">🥅 Throws, GK & Shots</a>
+      <a href="#/props" data-view="props">🥅 Props, 1H & Players</a>
       <a href="#/vault" data-view="vault">🎯 CS & Slip Vault</a>
       <a href="#/arena" data-view="arena">🧪 Cooked Odds Arena</a>
       <a href="#/radar" data-view="radar">🚨 Insider Radar</a>
@@ -28,10 +28,16 @@
       <a href="#/lab" data-view="lab">🧠 Model Lab</a>
       <a href="#/track" data-view="track">📊 Track Record</a>
     </nav>
-    <button id="open-slip" class="slip-btn" aria-label="Open Slip Centre" title="Open Slip Centre & Live Code Generator">
-      <span>🏦 Slip Centre</span>
-      <span id="slip-badge" class="slip-badge" hidden>0</span>
-    </button>
+    <div class="topbar-actions">
+      <button type="button" id="open-alerts" class="slip-btn alerts-btn" aria-label="Open Live Alerts & Telegram Push" title="Live Hedge-Lock, Winning Slips, Odds Crashes & Telegram Push">
+        <span>🔔 Alerts</span>
+        <span id="alerts-badge" class="slip-badge" hidden>0</span>
+      </button>
+      <button type="button" id="open-slip" class="slip-btn" aria-label="Open Slip Centre" title="Open Slip Centre & Live Code Generator">
+        <span>🏦 Slip Centre</span>
+        <span id="slip-badge" class="slip-badge" hidden>0</span>
+      </button>
+    </div>
     <span id="ai-status" class="ai-status" title="Gemini AI analyst status"></span>
   </header>
 
@@ -49,7 +55,7 @@
     <div class="slip-head">
       <div class="slip-title-wrap">
         <h2 id="slip-title">🏦 SportyBet Ghana Slip Centre</h2>
-        <span class="small muted">Max 50 SportyBet Games · History-Verified · Live 6-Char Codes</span>
+        <span class="small muted">Max 50 SportyBet Games · Clean Re-Booker · Live 6-Char Codes</span>
       </div>
       <button type="button" id="close-slip" class="btn" style="padding:.35rem .7rem;font-weight:800;flex-shrink:0" aria-label="Close Slip Centre">✕ Close</button>
     </div>
@@ -60,10 +66,14 @@
     <div id="detail-body"></div>
   </dialog>
 
+  <dialog id="alerts-dialog" closedby="any" aria-labelledby="alerts-dialog-title">
+    <div id="alerts-dialog-body"></div>
+  </dialog>
+
   <div id="toast-root" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
   <footer class="foot">
-    100% Live Data: SportyBet Ghana / Sportradar H2H &amp; Last-15 Feeds + ESPN Global Scoreboards · De-vigged Ensemble + Quarter-Kelly Sizing · Live Real-World Settlement Arena.
+    100% Live Data: SportyBet Ghana / Sportradar H2H, Lineups, Referees &amp; 15m Odds Time-Series + ESPN Global Scoreboards · Live Real-World Settlement Arena &amp; Telegram Push.
   </footer>
 </body>
 </html>

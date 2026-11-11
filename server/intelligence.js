@@ -22,6 +22,7 @@ import {
   findSportyEventForGame,
   generateSportyBookingCode,
 } from './sportybet.js';
+import { getSignificantOddsDrops } from './odds-tracker.js';
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 let client = null;
@@ -40,7 +41,19 @@ function buildForensicDossier(item) {
   let whatBookiesKnow = '';
   let integrityWarning = 'None — Standard sharp syndicate / insider lineup pricing.';
 
-  if (item.type === 'biscotto_draw') {
+  if (item.type === 'sporty_time_series_crash') {
+    suspicionLevel = HIGH_RISK_REGIONS.test(item.leagueName) || (item.dropPct || 0) >= 12 ? 'abnormal_integrity_alert' : 'sharp_syndicate_action';
+    confidence = 'high';
+    drivers.push(
+      `Verified multi-snapshot SportyBet Ghana crash: "${item.oddsDrop?.label || item.recommendedPick?.label}" fell from @${item.oddsDrop?.peakOdds || item.oddsDrop?.openOdds} → @${item.oddsDrop?.curOdds} (-${item.dropPct}%).`,
+      `Implied probability jumped +${item.oddsDrop?.impliedJumpPct || 0}% across ${item.oddsDrop?.snapshotsCount || 2} recorded 15-minute snapshots (${item.oddsDrop?.elapsedHours || 0.5}h window).`,
+      `Velocity: -${item.oddsDrop?.velocityPerHour || item.dropPct}%/hr live odds compression ahead of kickoff.`
+    );
+    whatBookiesKnow = `Our 15-minute SportyBet Ghana time-series recorder caught traders actively slashing payouts on "${item.oddsDrop?.label || item.recommendedPick?.label}" in real time. Genuine multi-snapshot pre-match drops of this magnitude occur when syndicate steam or confirmed locker-room/lineup leaks hit the market.`;
+    if (HIGH_RISK_REGIONS.test(item.leagueName) || (item.dropPct || 0) >= 14) {
+      integrityWarning = `Live Steam Plunge Alert (-${item.dropPct}%): Rapid pre-match odds crash recorded on SportyBet Ghana.`;
+    }
+  } else if (item.type === 'biscotto_draw') {
     suspicionLevel = 'abnormal_integrity_alert';
     confidence = 'high';
     drivers.push(
@@ -117,15 +130,65 @@ function buildForensicDossier(item) {
 
 /**
  * Scan both the Live SportyBet Ghana / BetRadar feed (250+ matches) AND ESPN scoreboards
- * for insider movements, syndicate steam, abnormal Draw/Goals pricing, and model divergences.
+ * for recorded 15-min time-series odds crashes, syndicate steam, abnormal Draw/Goals pricing, and model divergences.
  */
 export async function scanMarketAnomalies() {
   const anomalies = [];
   const seenIds = new Set();
 
-  // 1. Scan Live SportyBet Ghana / BetRadar Global Feed
+  // 1. Scan Live SportyBet Ghana / BetRadar Global Feed + Recorded 15-Min Odds-Drop Time Series
   try {
     const sportyEvents = await getSportyCatalog();
+    const evById = new Map(sportyEvents.map((e) => [e.eventId, e]));
+
+    // Signature 0: Real Observed Multi-Snapshot SportyBet Ghana Odds Crashes (15-Min Time-Series Recorder)
+    const liveDrops = getSignificantOddsDrops({ minDropPct: 4.5, limit: 25 });
+    for (const d of liveDrops) {
+      const ev = evById.get(d.eventId);
+      if (!ev) continue;
+      const sels = extractBookableSelections(ev);
+      const matchedPick = sels.find((s) =>
+        String(s.sportySelection?.marketId) === String(d.marketId) &&
+        String(s.sportySelection?.outcomeId) === String(d.outcomeId) &&
+        String(s.sportySelection?.specifier || '') === String(d.specifier || '')
+      );
+      if (!matchedPick) continue;
+      const id = `sporty:tsdrop:${d.eventId}:${d.marketId}:${d.outcomeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+
+      const item = {
+        id,
+        gameId: ev.eventId,
+        eventId: ev.eventId,
+        sportyGameId: ev.gameId,
+        league: ev.tournamentId || 'sporty',
+        leagueName: ev.leagueLabel || d.leagueName || 'Football',
+        sport: ev.sportType || 'soccer',
+        matchup: `${ev.homeTeamName} vs ${ev.awayTeamName}`,
+        home: ev.homeTeamName,
+        away: ev.awayTeamName,
+        date: ev.date,
+        type: 'sporty_time_series_crash',
+        severity: d.severity,
+        dropPct: d.dropPct,
+        oddsDrop: d,
+        detail: `Live SportyBet Odds Crash (-${d.dropPct}%): "${d.label}" dropped from @${d.peakOdds.toFixed(2)} → @${d.curOdds.toFixed(2)} (+${d.impliedJumpPct}% implied prob jump across ${d.snapshotsCount} snapshots).`,
+        odds: {
+          provider: 'SportyBet Ghana Time-Series',
+          current: { home: +(1 / d.curOdds).toFixed(3), away: +(1 - 1 / d.curOdds).toFixed(3) },
+          homeML: `Open @${d.openOdds.toFixed(2)} → Now @${d.curOdds.toFixed(2)}`,
+          awayML: `-${d.dropPct}% Drop (${d.snapshotsCount} pts)`,
+        },
+        modelProbs: { home: matchedPick.p, away: +(1 - matchedPick.p).toFixed(3) },
+        divergence: d.dropPct,
+        recommendedPick: matchedPick,
+        saferAlternativePick: sels.find((s) => s.marketKey === '1up' && s.selKey === matchedPick.selKey) || matchedPick,
+      };
+      item.forensicDossier = buildForensicDossier(item);
+      anomalies.push(item);
+    }
+
     for (const ev of sportyEvents) {
       if (ev.sportType && ev.sportType !== 'soccer') continue;
       const sels = extractBookableSelections(ev);

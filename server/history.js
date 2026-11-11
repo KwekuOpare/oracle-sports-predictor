@@ -592,8 +592,8 @@ export function vetSelectionWithHistory(sel, hist) {
     summary = `BTTS History: ${H} ${Math.round(home.bttsRate * 100)}% · ${A} ${Math.round(away.bttsRate * 100)}%${h2h.count >= 2 ? ` · H2H BTTS ${Math.round(h2h.bttsRate * 100)}%` : ''}`;
   }
 
-  // 6. 1st Half Goals
-  else if (isSoccer && mkt === '1hou0.5' && home.fhOver05Rate != null && away.fhOver05Rate != null) {
+  // 6. 1st Half Goals (1h_ou0.5 / 1hou0.5)
+  else if (isSoccer && (mkt === '1h_ou0.5' || mkt === '1hou0.5') && home.fhOver05Rate != null && away.fhOver05Rate != null) {
     const rFh = (home.fhOver05Rate + away.fhOver05Rate) / 2;
     empiricalP = sk === 'over' ? rFh : 1 - rFh;
     if (sk === 'over' && rFh < 0.55) {
@@ -603,7 +603,41 @@ export function vetSelectionWithHistory(sel, hist) {
     summary = `1st-Half Goal Rate: ${H} ${Math.round(home.fhOver05Rate * 100)}% · ${A} ${Math.round(away.fhOver05Rate * 100)}%`;
   }
 
-  // 7. Tactical Props (Corners, Shots, SOT, Cards, Throw-Ins, Goal Kicks) — attach attacking/tempo history context
+  // 6B. High-Accuracy Combo & "Or" Shield Markets (dc_ou1.5, home_or_o25, away_or_o25, ht_or_ft, 1x2_ou1.5)
+  else if (isSoccer && (mkt.startsWith('dc_ou') || mkt === 'home_or_o25' || mkt === 'away_or_o25' || mkt === 'home_or_gg' || mkt === 'away_or_gg' || mkt === 'ht_or_ft')) {
+    const o15Avg = ((home.over15Rate ?? 0.72) + (away.over15Rate ?? 0.72)) / 2;
+    const o25Avg = ((home.over25Rate ?? 0.50) + (away.over25Rate ?? 0.50)) / 2;
+    if (mkt === 'dc_ou1.5' && (sk === '1x_over' || sk === 'x2_over')) {
+      const dcEmp = sk === '1x_over'
+        ? (home.venueUnbeatenRate ?? home.unbeatenRate) * 0.6 + (1 - away.winRate) * 0.4
+        : (away.venueUnbeatenRate ?? away.unbeatenRate) * 0.6 + (1 - home.winRate) * 0.4;
+      empiricalP = Math.min(0.94, dcEmp * o15Avg * 1.06);
+      if (o15Avg < 0.56 || dcEmp < 0.55) {
+        veto = true;
+        vetoReason = `Historical DC/O1.5 rate too weak (${Math.round(dcEmp * 100)}% DC · ${Math.round(o15Avg * 100)}% O1.5)`;
+      }
+    } else if (mkt === 'home_or_o25' || mkt === 'away_or_o25') {
+      const isH = mkt === 'home_or_o25';
+      const wEmp = isH ? home.winRate : away.winRate;
+      empiricalP = Math.min(0.95, 1 - (1 - wEmp) * (1 - o25Avg));
+      if (wEmp < 0.25 && o25Avg < 0.42) {
+        veto = true;
+        vetoReason = `Both win rate (${Math.round(wEmp * 100)}%) and O2.5 rate (${Math.round(o25Avg * 100)}%) are low`;
+      }
+    } else if (mkt === 'ht_or_ft' && (sk === 'home' || sk === 'away')) {
+      const isH = sk === 'home';
+      const mySide = isH ? home : away;
+      const oppSide = isH ? away : home;
+      if (mySide.played >= 5 && mySide.winRate < 0.28) {
+        veto = true;
+        vetoReason = `${isH ? H : A} won only ${mySide.wins}/${mySide.played} recent matches`;
+      }
+      empiricalP = Math.min(0.94, mySide.winRate * 0.62 + oppSide.loseRate * 0.38 + 0.11);
+    }
+    summary = `Combo Shield Check: ${H} ${home.form5} (${home.recordStr}, O1.5 ${Math.round((home.over15Rate ?? 0) * 100)}%) vs ${A} ${away.form5} (${away.recordStr}, O1.5 ${Math.round((away.over15Rate ?? 0) * 100)}%)${h2hShort}`;
+  }
+
+  // 7. Tactical Props (Corners, Shots, SOT, Cards, Throw-Ins, Goal Kicks, Player Props) — attach attacking/tempo history context
   else if (isSoccer) {
     summary = `History Tempo: ${H} ${home.form5} (${home.gfAvg} GF / ${home.gaAvg} GA) vs ${A} ${away.form5} (${away.gfAvg} GF / ${away.gaAvg} GA)${h2hShort}`;
     // Sanity check for team corners / team SOT overs: don't back a dead-attack team for Over corners/shots!

@@ -18,55 +18,47 @@ Or double-click `Start-Sports-Predictor.bat` on Windows.
 
 ## Key Capabilities
 
-### 1. 📜 Pre-Bet Historical Form, Venue Split & Direct H2H Verification (`server/history.js`)
-- Queries live Sportradar historical feeds (`Last-15` completed matches per team + direct `H2H` meetings) for upcoming SportyBet fixtures **before** suggesting any bet.
-- Computes empirical hit rates (Home/Away win/unbeaten rates, Over 1.5/2.5, BTTS, 1st-Half goals, clean sheets, goals scored/conceded, and H2H dominance), **hard-vetoes form/H2H traps** (e.g. poor-form favorites or chronic low-scoring traps), blends empirical history (`28%`) with the de-vigged statistical ensemble (`72%`), and displays transparent `📜 Form ... · H2H ...` proof on every leg.
+### 1. 📜 Pre-Bet Historical Form, Lineups, Squad Rotation, Referee & Official Season Prop Veto Gate (`server/history.js` & `server/lineups.js`)
+- Queries live Sportradar historical feeds (`Last-15` completed matches per team + direct `H2H` meetings), official match info (`match_info`, `match_squads` confirmed Starting XI vs previous XI rotation, `match_funfacts`), official season team & top-scorer telemetry (`stats_season_uniqueteamstats`, `stats_season_topgoals`), and ESPN `injuries` + `officials` + `rosters` **before** suggesting any bet.
+- Hard-vetoes heavy lineup rotation (`>= 5` XI changes), missing top goalscorers, injury crises, and conflicting season prop averages (shots, SOT, corners, cards), displaying transparent `📜 Form ... · H2H ...` and `✅ XI Confirmed / 🧑‍⚖️ Ref` badges on every leg.
 
-### 2. 👑 Multi-Match Compounding up to `20,000,000x+` (`20M+`) Within SportyBet's 50-Game Limit
+### 2. 🥅 Deep Per-Match SportyBet Extraction: Player Props, Combo Shields, 1st Half, Throws, GK & Shots (`server/sportybet.js`)
+- Queries SportyBet Ghana's full `/api/gh/factsCenter/event` endpoint across top upcoming football fixtures to unlock **200–650+ real bookable markets per match** beyond the lite catalog:
+  - **Player Props (`776`, `777`, `800297`, `800289`)**: Player Total Shots, Player Shots on Target (SOT), Goalkeeper Saves, and Player Score/Assist.
+  - **Combo & "Or" Shield Markets (`547`, `546`, `37`, `35`, `36`, `854`, `858`, `860`, `862`, `1179`)**: `DC & O/U`, `DC & GG/NG`, `1X2 & O/U`, `Home/Away Win OR Over 2.5`, `Home/Away Win OR GG`, and `1st Half OR FT Result` — modeled via joint Dixon-Coles bivariate Poisson scoreline grids.
+  - **1st Half Markets (`60`, `68`, `63`, `64`, `75`, `152`, `800064`)**: 1H `1X2`, 1H `O/U (0.5–2.5)`, 1H Double Chance, 1H Draw No Bet, 1H `GG/NG`, 1H Correct Score, and 1H `1UP`.
+  - **Match Tactical Props**: Shots & SOT (`O/U`, Team `O/U`, `1X2`), Corners, Bookings/Cards, Throw-Ins (`O/U` & `1X2`), Goal Kicks (`O/U` & `1X2`), Fouls, and Offsides `1X2` (`900570`).
+
+### 3. 👑 Multi-Match Compounding up to `20,000,000x+` (`20M+`), Pre-Booked Pod A–D Codes & 1-Click Clean Re-Booker
 - Enforces SportyBet Ghana's strict **`50`-game maximum** across all curated slips, custom synthesizers, booking codes, and the interactive **Slip Centre**.
-- Compounds **history-verified, high-accuracy legs (`@1.35–@1.82` geometric pacing)** across up to 50 distinct matches to reach `1,000,000x+` (`1M+`), `5,000,000x` (`5M+`), `10,000,000x` (`10M+`), and **`20,000,000x+` (`20M+` History-Verified Mega Multi)** without exceeding 50 games.
-- Includes curated daily slips:
-  - 🛡️ **Daily 2.00x–3.00x Rollover Banker**
-  - 🔥 **Vhim Sure Banker (5-Fold)**
-  - 🚀 **30-Game High-Accuracy Super Multi**
-  - 🔥 **48-Game "MILLION-ODDS" (`1M+`) Vhim Grand Slam**
-  - 👑 **50-Game "20-MILLION+" (`20M+`) History-Verified Mega Multi**
-  - 🥅 **High-Accuracy Shots, SOT, Corners & Props Sniper (8-Fold)**
-  - 🎯 **Correct Score Sniper & Slip Centre 20-Game Vault (`#/vault`)**
+- **Pre-Booked 6-Char Pod Split Codes (`Pod A / B / C / D`)**: Every `20–50` game accumulator automatically pre-books real 6-character SportyBet Ghana booking codes for its `10–13` leg Pods alongside the main `1M+` / `20M+` code and Poisson-Binomial **Flex / Cut-X Directive**.
+- **1-Click "Strip Started & Mint Fresh Code" (`POST /api/sportybet/rebook-clean`)**: Audits any SportyBet Ghana code or active slip against live kickoff/market status, strips locked or already-started matches, and immediately mints a fresh 6-character SportyBet Ghana code for the remaining active pre-match legs.
 
-### 3. 🛡️ Exact SportyBet Flex / Cut-X Directive Engine
-Every cooked or custom ticket runs **exact Poisson-Binomial Dynamic Programming** over its leg probabilities to calculate `expectedHits`, `P(Full Acca)`, `P(Cut-1)`, `P(Cut-2)`, `P(Cut-3)`, and `P(Cut-5)`, surfacing an explicit **Oracle Flex Directive Banner**:
-- **🟢 PLAY STRAIGHT (NO FLEX NEEDED)**: Short high-confidence Rollover Bankers (`2–5` games) where full-multiplier EV dominates.
-- **🛡️ ENABLE SPORTYBET FLEX: CUT-1**: Medium multis (`6–11` games) where 1 upset slip still locks profit.
-- **🛡️ ENABLE SPORTYBET FLEX: CUT-2 (OR CUT-1)**: `12–24` game multis where variance requires a 2-cut cushion.
-- **🚨 MANDATORY SPORTYBET MAX-FLEX (CUT-3 / CUT-5) + POD SPLIT**: `25–50` game `1M+` & `20M+` Grand Slams — includes one-click **Pod A / Pod B / Pod C / Pod D (`12–13` game sub-slips)** loading in the Slip Centre alongside the full 50-game lotto code.
+### 4. 📉 Real 15-Minute SportyBet Ghana Odds-Drop Time-Series Recorder (`server/odds-tracker.js`)
+- Continuously snapshots live SportyBet Ghana odds every 15 minutes into `data/odds-history.json`, recording genuine multi-snapshot opening → peak → current odds trajectories, drop percentages, and implied probability jumps.
+- Renders inline **SVG Time-Series Sparklines** on `#/radar` (`sporty_time_series_crash`) and boosts real smart-money steam legs in candidate scoring.
 
-### 4. 🥅 High-Accuracy Throws, Goal Kicks, Shots, SOT, Corners & Cards (`#/props`)
-- Dedicated **`#/props` ("Throws, GK & Shots")** hub + full per-match breakdowns (`#/games`) and section filters (`#/picks`) backed strictly by **real live SportyBet Ghana bookable markets** and **real ESPN historical `StatsModel` game-log distributions** (zero synthetic `1X2`-guessed prop formulas):
-  - **Shots & Shots on Target (SOT)**: Match & Team Shots O/U, Match & Team SOT O/U, Most Shots `1X2`, Most SOT `1X2` (with live SportyBet Ghana booking).
-  - **Corners, Bookings/Cards, Fouls, Offsides, Throw-Ins & Goal Kicks**: Negative-Binomial overdispersed modeling (`r` dispersion parameter) for real bookable and historical game-log markets.
-- Strictly filters `#/props` to **high-likelihood, history-vetted selections (`65%–90%+` confidence)** so weak coin-flip props are never surfaced.
+### 5. 🔔 Instant Telegram Bot + Browser Push Alert Engine (`server/alerts.js`)
+- Delivers deduplicated real-time HTML push notifications via **Telegram Bot API** and **Web Browser Desktop `Notification` API** (configurable in `.env` or live inside the topbar `🔔 Alerts` modal with masked token security) for:
+  1. **Live Arena Cashout / Hedge-Lock Windows**
+  2. **Settled Winning Tickets (`WON` & `WON_FLEX_CUT*`)**
+  3. **Sharp Live SportyBet Odds Crashes**
+  4. **Daily Pre-Booked SportyBet Ghana Codes Digest**
 
-### 5. 🧪 Live Cooked Odds & Ticket Verification Arena (`#/arena` — Zero Demos / Zero Simulated Backtests)
-- Tracks **only genuine pre-kickoff SportyBet Ghana slips & user-booked slips** (zero seeded demo slips, zero retroactive `verified_backtest` simulations, zero fake starting bankroll).
-- Syncs live in-play and official final scores + match stats across all 6 SportyBet sports via **SportyBet Ghana live feeds**, **official Sportradar post-match feeds**, and **ESPN Global Scoreboards**.
-- Plots a **Real Settled Cumulative Net P&L Curve (`₵0.00` baseline)**, requires official result feeds before settling (`UNVERIFIED` legs never push to false wins), and feeds settled market calibration weights back into the AI Ticket Cooker.
-
-### 6. 🧠 Self-Learning Brain & Market Integrity Radar (`#/lab` & `#/radar`)
-- **Genetic Algorithm Evolution (`server/brain.js`)** with Champion vs. Challenger holdout validation, learned ensemble trust weights, and Gemini AI mistake post-mortems (`server/lessons.js`).
-- **Market Surveillance Radar (`#/radar`)** detecting sharp odds crashes, syndicate steam moves, and model-vs-market divergences.
+### 6. 🧪 Live Cooked Odds & Ticket Verification Arena (`#/arena` — Zero Demos / Zero Simulations)
+- Tracks **only genuine pre-kickoff SportyBet Ghana slips & user-booked slips** (zero demos, zero synthetic backtests, zero fake starting bankroll) and grades Main, 1st-Half, Combo Shield, and Prop markets against official SportyBet, Sportradar, and ESPN match feeds.
 
 ---
 
 ## API Reference
 
-- `GET /api/overview`: Command deck snapshot (Rollover Banker, 50-Game `20M+` Mega Multi, `1M+` Grand Slam, Props Sniper, Arena P&L)
-- `GET /api/tickets`: Curated history-verified & SportyBet Ghana booked multi-match tickets (`≤ 50` games) with Flex Directives
-- `POST /api/tickets/generate`: Custom Accumulator Synthesizer (`2`–`50` games max, `targetOdds` up to `20,000,000+`, modes: `mixed`, `20m`, `million`, `shots`, `throws_gk`, `corners`, `cards`, `ou1.5`, `ou2.5`, `gg`, `1x2`, `cs`)
-- `GET /api/props?category=all&minP=0.65`: High-accuracy Throw-Ins, Goal Kicks, Shots, SOT, Corners, Cards & Fouls hub + booked Props Sniper ticket
-- `POST /api/sportybet/book`: Live SportyBet Ghana share-code generator (`POST /api/gh/orders/share`, capped at 50 games)
+- `GET /api/overview`: Command deck snapshot (Rollover Banker, Combo Shield Banker, 50-Game `20M+` Mega Multi, `1M+` Grand Slam, Arena P&L, Odds Tracker stats, Unread Alerts)
+- `GET /api/tickets` & `POST /api/tickets/generate`: History- & lineup-vetted SportyBet Ghana tickets (`≤ 50` games) with Pre-Booked `Pod A–D` codes (`modes`: `mixed`, `20m`, `million`, `combos`, `1h`, `player_props`, `shots`, `throws_gk`, `corners`, `cards`, `ou1.5`, `ou2.5`, `gg`, `1x2`, `cs`)
+- `POST /api/sportybet/book` & `POST /api/sportybet/rebook-clean`: Live SportyBet Ghana booking code generator & 1-click started-leg stripper / re-booker
+- `GET /api/props?category=all&minP=0.65`: Deep SportyBet Player Props, Combo Shields, 1st Half, Throw-Ins, Goal Kicks, Shots, SOT, Corners & Cards hub
+- `GET /api/lineups/:eventId`: Real Sportradar + ESPN Starting XI, squad rotation, injuries, referee, stadium & official season prop profile
+- `GET /api/odds-movements` & `GET /api/odds-movements/:eventId`: Real 15-minute SportyBet Ghana odds-drop time-series snapshots
+- `GET /api/alerts`, `POST /api/alerts/config`, `POST /api/alerts/test`, `POST /api/alerts/send-daily-codes`: Real-time Telegram & Browser Push Alert Center
 - `GET /api/arena`: Live & historical real-world verification ledger for all cooked tickets and legs
-- `GET /api/picks?minP=0.65&group=all`: Cross-league history-verified high-probability & `+EV` picks scanner
-- `GET /api/games/:league` & `GET /api/game/:league/:id`: Full match & 70+ market statistical predictions
 
 > Predictions are probabilistic estimates for research, analytical testing, and entertainment — always apply bankroll discipline and follow the Oracle Flex Directives on high-fold accumulators.

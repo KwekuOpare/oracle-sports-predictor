@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normTeam, teamMatchScore } from './sportybet.js';
 import { getCuratedTickets, getSlipCentreVault } from './tickets.js';
+import { evaluateArenaAlerts } from './alerts.js';
 
 const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'arena.json');
 
@@ -214,7 +215,7 @@ export function gradeLegAgainstMatch(leg, match) {
   }
 
   // 6. Total Goals Over/Under (ou0.5, ou1.5, ou2.5, ou3.5, ou4.5, total)
-  if (mk.startsWith('ou') || mk === 'total') {
+  if ((mk.startsWith('ou') && !mk.startsWith('ou_ggng')) || mk === 'total') {
     const line = extractLineNumber(mk, pickText, 2.5);
     if (sk === 'over') {
       if (totalGoals > line) {
@@ -386,6 +387,11 @@ export function gradeLegAgainstMatch(leg, match) {
       const kDiff = st.homeCards - st.awayCards;
       const kWin = kDiff > 0 ? 'home' : kDiff < 0 ? 'away' : 'draw';
       if (isFinal) return sk === kWin ? res('WON', `Cards ${st.homeCards}:${st.awayCards} ✓`) : res('LOST', `Cards ${st.homeCards}:${st.awayCards}`);
+    } else if (mk === 'cards_milestone' && Number.isFinite(st.cards)) {
+      const targetCards = Math.round(extractLineNumber(sk, pickText, 3));
+      if (st.cards >= targetCards) return res(isFinal ? 'WON' : 'WON_EARLY', `Cards: ${st.cards} (${targetCards}+ ✓)`);
+      if (isFinal) return res('LOST', `Total Cards: ${st.cards} (needed ${targetCards}+)`);
+      return res('TRAILING_LIVE', `Cards so far: ${st.cards}/${targetCards}`);
     } else if (Number.isFinite(st.cards)) {
       const line = extractLineNumber(mk, pickText, 3.5);
       if (sk === 'over' && st.cards > line) {
@@ -445,10 +451,173 @@ export function gradeLegAgainstMatch(leg, match) {
       if (isFinal) return (sk === 'over' ? st.fouls > line : st.fouls < line) ? res('WON', `Total Fouls: ${st.fouls} ✓`) : res('LOST', `Total Fouls: ${st.fouls}`);
     }
   }
-  if (mk.startsWith('offsides') && Number.isFinite(st.offsides)) {
-    const line = extractLineNumber(mk, pickText, 3.5);
-    if (sk === 'over' && st.offsides > line) return res(isFinal ? 'WON' : 'WON_EARLY', `Offsides: ${st.offsides} (> ${line})`);
-    if (isFinal) return (sk === 'over' ? st.offsides > line : st.offsides < line) ? res('WON', `Total Offsides: ${st.offsides} ✓`) : res('LOST', `Total Offsides: ${st.offsides}`);
+  if (mk.startsWith('offsides')) {
+    if (mk === 'offsides_1x2' && Number.isFinite(st.homeOffsides) && Number.isFinite(st.awayOffsides)) {
+      const oDiff = st.homeOffsides - st.awayOffsides;
+      const oWin = oDiff > 0 ? 'home' : oDiff < 0 ? 'away' : 'draw';
+      if (isFinal) return sk === oWin ? res('WON', `Offsides ${st.homeOffsides}:${st.awayOffsides} ✓`) : res('LOST', `Offsides ${st.homeOffsides}:${st.awayOffsides}`);
+    } else if (Number.isFinite(st.offsides)) {
+      const line = extractLineNumber(mk, pickText, 3.5);
+      if (sk === 'over' && st.offsides > line) return res(isFinal ? 'WON' : 'WON_EARLY', `Offsides: ${st.offsides} (> ${line})`);
+      if (isFinal) return (sk === 'over' ? st.offsides > line : st.offsides < line) ? res('WON', `Total Offsides: ${st.offsides} ✓`) : res('LOST', `Total Offsides: ${st.offsides}`);
+    }
+  }
+  if (mk.startsWith('throwins')) {
+    if (mk === 'throwins_1x2' && Number.isFinite(st.homeThrowIns) && Number.isFinite(st.awayThrowIns)) {
+      const tDiff = st.homeThrowIns - st.awayThrowIns;
+      const tWin = tDiff > 0 ? 'home' : tDiff < 0 ? 'away' : 'draw';
+      if (isFinal) return sk === tWin ? res('WON', `Throw-Ins ${st.homeThrowIns}:${st.awayThrowIns} ✓`) : res('LOST', `Throw-Ins ${st.homeThrowIns}:${st.awayThrowIns}`);
+    } else if (Number.isFinite(st.throwIns)) {
+      const line = extractLineNumber(mk, pickText, 38.5);
+      if (sk === 'over' && st.throwIns > line) return res(isFinal ? 'WON' : 'WON_EARLY', `Throw-Ins: ${st.throwIns} (> ${line})`);
+      if (isFinal) return (sk === 'over' ? st.throwIns > line : st.throwIns < line) ? res('WON', `Throw-Ins: ${st.throwIns} ✓`) : res('LOST', `Throw-Ins: ${st.throwIns}`);
+    }
+  }
+  if (mk.startsWith('goalkicks')) {
+    if (mk === 'goalkicks_1x2' && Number.isFinite(st.homeGoalKicks) && Number.isFinite(st.awayGoalKicks)) {
+      const gDiff = st.homeGoalKicks - st.awayGoalKicks;
+      const gWin = gDiff > 0 ? 'home' : gDiff < 0 ? 'away' : 'draw';
+      if (isFinal) return sk === gWin ? res('WON', `Goal Kicks ${st.homeGoalKicks}:${st.awayGoalKicks} ✓`) : res('LOST', `Goal Kicks ${st.homeGoalKicks}:${st.awayGoalKicks}`);
+    } else if (Number.isFinite(st.goalKicks)) {
+      const line = extractLineNumber(mk, pickText, 15.5);
+      if (sk === 'over' && st.goalKicks > line) return res(isFinal ? 'WON' : 'WON_EARLY', `Goal Kicks: ${st.goalKicks} (> ${line})`);
+      if (isFinal) return (sk === 'over' ? st.goalKicks > line : st.goalKicks < line) ? res('WON', `Goal Kicks: ${st.goalKicks} ✓`) : res('LOST', `Goal Kicks: ${st.goalKicks}`);
+    }
+  }
+
+  // 17. 1st Half Markets (1h_1x2, 1h_ou0.5/1.5/2.5, 1h_dc, 1h_dnb, 1h_ggng, 1h_cs)
+  if (mk.startsWith('1h_')) {
+    const htDone = Number.isFinite(match.htHome) && Number.isFinite(match.htAway);
+    const in1H = !htDone && !isFinal && /1st|1h|first|^([1-3]?\d|4[0-5])(\+\d+)?'?$/i.test(String(match.clock || match.matchStatus || ''));
+    const h1 = htDone ? match.htHome : h;
+    const a1 = htDone ? match.htAway : a;
+    const d1 = h1 - a1;
+    const tot1 = h1 + a1;
+    const winState = isFinal ? 'WON' : 'WON_EARLY';
+
+    if (mk.startsWith('1h_ou')) {
+      const line = extractLineNumber(mk, pickText, 0.5);
+      if (sk === 'over' && (htDone || in1H) && tot1 > line) {
+        return res(winState, `⚡ 1H Over ${line} (${h1}:${a1})`);
+      }
+      if (htDone) {
+        const hit = sk === 'over' ? tot1 > line : tot1 < line;
+        return hit ? res(winState, `1H Goals ${h1}:${a1} ✓`) : res('LOST', `1H Score ${h1}:${a1}`);
+      }
+      if (in1H && sk === 'under' && tot1 > line) return res('LOST', `1H Goals ${tot1} exceeded Under ${line}`);
+    } else if (mk === '1h_1x2' && htDone) {
+      const w1 = d1 > 0 ? 'home' : d1 < 0 ? 'away' : 'draw';
+      return sk === w1 ? res(winState, `HT ${h1}:${a1} ✓`) : res('LOST', `HT ${h1}:${a1}`);
+    } else if (mk === '1h_dc' && htDone) {
+      const hit = (sk === '1x' && d1 >= 0) || (sk === 'x2' && d1 <= 0) || (sk === '12' && d1 !== 0);
+      return hit ? res(winState, `1H DC ${sk.toUpperCase()} (${h1}:${a1}) ✓`) : res('LOST', `HT ${h1}:${a1}`);
+    } else if (mk === '1h_dnb' && htDone) {
+      if (d1 === 0) return res('VOID', `HT Draw ${h1}:${a1} — Push`);
+      const hit = (sk === 'home' && d1 > 0) || (sk === 'away' && d1 < 0);
+      return hit ? res(winState, `1H DNB (${h1}:${a1}) ✓`) : res('LOST', `HT ${h1}:${a1}`);
+    } else if (mk === '1h_ggng') {
+      if ((sk === 'gg' || sk === 'yes') && (htDone || in1H) && h1 >= 1 && a1 >= 1) {
+        return res(winState, `⚡ 1H GG Landed (${h1}:${a1})`);
+      }
+      if (htDone) {
+        const both1 = h1 >= 1 && a1 >= 1;
+        const hit = (sk === 'gg' || sk === 'yes') ? both1 : !both1;
+        return hit ? res(winState, `1H GG/NG (${h1}:${a1}) ✓`) : res('LOST', `HT ${h1}:${a1}`);
+      }
+    } else if (mk === '1h_cs' && htDone) {
+      const target = parseScoreStr(sk) || parseScoreStr(pickText);
+      if (target) {
+        return (h1 === target.th && a1 === target.ta) ? res(winState, `HT Exact ${h1}:${a1} ✓`) : res('LOST', `HT ${h1}:${a1}`);
+      }
+    }
+    if (!htDone && isFinal) {
+      return res('UNVERIFIED', 'FT recorded · official HT split unavailable');
+    }
+    if (!htDone) return res('WINNING_LIVE', '1st Half In-Play');
+  }
+
+  // 18. Combo & "Or" Shield Markets (dc_ou*, dc_ggng, 1x2_ou*, 1x2_ggng, ou_ggng*, home_or_o25, away_or_o25, home_or_gg, away_or_gg, ht_or_ft)
+  if (mk.startsWith('dc_ou')) {
+    const line = extractLineNumber(mk, pickText, 1.5);
+    const [dcPart, ouPart] = sk.split('_');
+    const dcHit = (dcPart === '1x' && diff >= 0) || (dcPart === 'x2' && diff <= 0) || (dcPart === '12' && diff !== 0);
+    const ouHit = ouPart === 'over' ? totalGoals > line : totalGoals < line;
+    if (ouPart === 'under' && totalGoals > line) return res('LOST', `${totalGoals} goals exceeded Under ${line}`);
+    if (isFinal) return (dcHit && ouHit) ? res('WON', `DC & O/U ✓`) : res('LOST', `Combo missed (${scoreStr})`);
+    return (dcHit && ouHit) ? res('WINNING_LIVE', 'Combo on track') : res('TRAILING_LIVE', 'Needs combo leg');
+  }
+  if (mk === 'dc_ggng') {
+    const [dcPart, ggPart] = sk.split('_');
+    const dcHit = (dcPart === '1x' && diff >= 0) || (dcPart === 'x2' && diff <= 0) || (dcPart === '12' && diff !== 0);
+    const both = h >= 1 && a >= 1;
+    const ggHit = ggPart === 'gg' ? both : !both;
+    if (ggPart === 'ng' && both) return res('LOST', 'Both teams scored (NG lost)');
+    if (isFinal) return (dcHit && ggHit) ? res('WON', 'DC & GG/NG ✓') : res('LOST', `Combo missed (${scoreStr})`);
+    return (dcHit && ggHit) ? res('WINNING_LIVE', 'Combo on track') : res('TRAILING_LIVE', 'Needs combo leg');
+  }
+  if (mk.startsWith('1x2_ou')) {
+    const line = extractLineNumber(mk, pickText, 1.5);
+    const [resPart, ouPart] = sk.split('_');
+    const curW = diff > 0 ? 'home' : diff < 0 ? 'away' : 'draw';
+    const ouHit = ouPart === 'over' ? totalGoals > line : totalGoals < line;
+    if (ouPart === 'under' && totalGoals > line) return res('LOST', `${totalGoals} goals exceeded Under ${line}`);
+    if (isFinal) return (curW === resPart && ouHit) ? res('WON', '1X2 & O/U ✓') : res('LOST', `Combo missed (${scoreStr})`);
+    return (curW === resPart && ouHit) ? res('WINNING_LIVE', 'Combo on track') : res('TRAILING_LIVE', 'Needs combo leg');
+  }
+  if (mk === '1x2_ggng') {
+    const [resPart, ggPart] = sk.split('_');
+    const curW = diff > 0 ? 'home' : diff < 0 ? 'away' : 'draw';
+    const both = h >= 1 && a >= 1;
+    const ggHit = ggPart === 'gg' ? both : !both;
+    if (ggPart === 'ng' && both) return res('LOST', 'Both teams scored (NG lost)');
+    if (isFinal) return (curW === resPart && ggHit) ? res('WON', '1X2 & GG/NG ✓') : res('LOST', `Combo missed (${scoreStr})`);
+    return (curW === resPart && ggHit) ? res('WINNING_LIVE', 'Combo on track') : res('TRAILING_LIVE', 'Needs combo leg');
+  }
+  if (mk.startsWith('ou_ggng')) {
+    const line = extractLineNumber(mk, pickText, 2.5);
+    const both = h >= 1 && a >= 1;
+    if (sk === 'over_gg') {
+      if (totalGoals > line && both) return res(isFinal ? 'WON' : 'WON_EARLY', `⚡ Over ${line} & GG Landed!`);
+      return isFinal ? res('LOST', `Missed Over ${line} & GG`) : res('TRAILING_LIVE', 'Needs goals/GG');
+    }
+    if (sk === 'under_ng') {
+      if (totalGoals > line || both) return res('LOST', 'Exceeded Under or both scored');
+      return isFinal ? res('WON', `Under ${line} & NG ✓`) : res('WINNING_LIVE', 'On track');
+    }
+  }
+  if (mk === 'home_or_o25' || mk === 'away_or_o25') {
+    const teamWin = mk === 'home_or_o25' ? diff > 0 : diff < 0;
+    if (sk === 'yes') {
+      if (totalGoals >= 3) return res(isFinal ? 'WON' : 'WON_EARLY', `⚡ Shield Won via Over 2.5 (${totalGoals} goals)!`);
+      if (isFinal) return teamWin ? res('WON', 'Shield Won via FT Result ✓') : res('LOST', `Missed Win & O2.5 (${scoreStr})`);
+      return teamWin ? res('WINNING_LIVE', 'Leading live') : res('TRAILING_LIVE', 'Needs Win or 3+ goals');
+    }
+    if (sk === 'no') {
+      if (totalGoals >= 3) return res('LOST', '3+ goals scored');
+      if (isFinal) return !teamWin ? res('WON', 'Shield No Held ✓') : res('LOST', 'Team won');
+    }
+  }
+  if (mk === 'home_or_gg' || mk === 'away_or_gg') {
+    const teamWin = mk === 'home_or_gg' ? diff > 0 : diff < 0;
+    const both = h >= 1 && a >= 1;
+    if (sk === 'yes') {
+      if (both) return res(isFinal ? 'WON' : 'WON_EARLY', `⚡ Shield Won via GG (${scoreStr})!`);
+      if (isFinal) return teamWin ? res('WON', 'Shield Won via FT Result ✓') : res('LOST', `Missed Win & GG (${scoreStr})`);
+      return teamWin ? res('WINNING_LIVE', 'Leading live') : res('TRAILING_LIVE', 'Needs Win or GG');
+    }
+  }
+  if (mk === 'ht_or_ft') {
+    const htDone = Number.isFinite(match.htHome) && Number.isFinite(match.htAway);
+    const htWin = htDone ? (match.htHome > match.htAway ? 'home' : match.htHome < match.htAway ? 'away' : 'draw') : null;
+    const ftWin = diff > 0 ? 'home' : diff < 0 ? 'away' : 'draw';
+    if (htDone && htWin === sk) {
+      return res(isFinal ? 'WON' : 'WON_EARLY', `⚡ Won 1st Half (${match.htHome}:${match.htAway}) ✓`);
+    }
+    if (isFinal) {
+      if (ftWin === sk) return res('WON', `Won Full Time (${scoreStr}) ✓`);
+      return htDone ? res('LOST', `Missed HT (${match.htHome}:${match.htAway}) & FT (${scoreStr})`) : res('UNVERIFIED', 'FT lost · HT split unavailable');
+    }
+    return ftWin === sk ? res('WINNING_LIVE', 'Leading live') : res('TRAILING_LIVE', 'Needs HT or FT win');
   }
 
   // Fallback for prop markets on finished games where external stat feed only had goals:
@@ -652,6 +821,7 @@ export async function registerTickets(ticketList, { source = 'live_cooked', defa
       combinedFairOdds: raw.combinedFairOdds || 0,
       totalSportyOdds: raw.totalSportyOdds || raw.combinedFairOdds || 1,
       flexDirective: raw.flexDirective || existing?.flexDirective || null,
+      podSplits: raw.podSplits || existing?.podSplits || null,
       stakeGHS: raw.stakeGHS || existing?.stakeGHS || smartDefaultStake,
       legs,
     };
@@ -1089,6 +1259,7 @@ export async function syncArena({ force = false } = {}) {
   db.lastSyncedAt = new Date().toISOString();
   dirty = true;
   await save();
+  await evaluateArenaAlerts(Object.values(db.tickets)).catch(() => {});
   return getArenaSnapshot();
 }
 

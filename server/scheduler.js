@@ -11,9 +11,24 @@ import * as lessons from './lessons.js';
 import { aiEnabled, generateLesson } from './ai.js';
 import * as arena from './arena.js';
 import * as tickets from './tickets.js';
+import * as sportybet from './sportybet.js';
+import { getSignificantOddsDrops } from './odds-tracker.js';
+import { evaluateOddsCrashAlerts, sendDailyCodesDigest } from './alerts.js';
 
 let busy = false;
 const log = (...a) => console.log('[scheduler]', ...a);
+
+export async function oddsSnapshotCycle() {
+  try {
+    await sportybet.getSportyCatalog(true);
+    const crashes = getSignificantOddsDrops({ minDropPct: 8.0, limit: 20 });
+    if (crashes.length) {
+      await evaluateOddsCrashAlerts(crashes);
+    }
+  } catch (e) {
+    log('odds snapshot cycle warning:', e.message);
+  }
+}
 
 export async function evolveLeague(leagueId, reason = 'manual') {
   const league = getLeague(leagueId);
@@ -62,6 +77,7 @@ export async function shortCycle() {
     const freshTickets = await tickets.getCuratedTickets(false, 'all').catch(() => []);
     if (freshTickets.length) {
       await arena.registerTickets(freshTickets, { source: 'live_cooked', defaultStakeGHS: 100 }).catch(() => {});
+      await sendDailyCodesDigest(freshTickets, { manual: false }).catch(() => {});
     }
     await arena.syncArena({ force: true }).catch((e) => log('arena sync warning:', e.message));
     const graded = await tracker.gradePending(getLeague, getScoreboard);
@@ -106,7 +122,8 @@ export function start() {
   setTimeout(() => shortCycle().catch((e) => log(e.message)), 25e3).unref();
   setTimeout(() => longCycle().catch((e) => log(e.message)), 60e3).unref();
   setInterval(() => arena.syncArena({ force: true }).catch((e) => log(e.message)), 5 * 60e3).unref();
+  setInterval(() => oddsSnapshotCycle().catch((e) => log(e.message)), 15 * 60e3).unref();
   setInterval(() => shortCycle().catch((e) => log(e.message)), 30 * 60e3).unref();
   setInterval(() => longCycle().catch((e) => log(e.message)), 6 * 3600e3).unref();
-  log('started (arena live-settlement every 5 min, learn every 30 min, evolve every 6 h)');
+  log('started (arena sync every 5m, SportyBet odds time-series every 15m, learn every 30m, evolve every 6h)');
 }

@@ -9,6 +9,8 @@
 //    (e.g. "9YG45J") and direct share URLs (https://www.sportybet.com/gh/?shareCode=9YG45J).
 // 4. Load & decode any existing SportyBet Ghana Booking Code via GET /api/gh/orders/share/:code.
 
+import { recordCatalogOddsSnapshot, getSelectionMovement } from './odds-tracker.js';
+
 const SPORTY_BASE = 'https://www.sportybet.com/api/gh';
 
 const SPORTY_HEADERS = {
@@ -23,20 +25,23 @@ const SPORTY_HEADERS = {
 };
 
 // All key football market IDs supported by SportyBet Ghana in bulk queries:
-// 1=1X2, 60200=1UP, 60100=2UP, 18=O/U, 10=DC, 29=GG/NG, 11=DNB, 14=Handicap,
-// 19=Home O/U, 20=Away O/U, 26=Odd/Even, 31=Home CS, 32=Away CS, 33=Home WTN, 34=Away WTN,
-// 45=Correct Score, 47=HT/FT, 548=Multigoals, 551=Multiscores,
-// 166=Corners O/U, 162=Corners 1X2, 139=Bookings O/U, 136=Bookings 1X2,
-// 900394=Shots O/U, 900393=SOT O/U, 900396=Offsides O/U, 900342=Fouls O/U, 900769=Throw-Ins O/U
+// Main & Goals: 1=1X2, 60200=1UP, 60100=2UP, 18=O/U, 10=DC, 29=GG/NG, 11=DNB, 14=Handicap,
+// 19=Home O/U, 20=Away O/U, 26=Odd/Even, 31/32=CS, 33/34=WTN, 45=Correct Score, 47=HT/FT, 548=Multigoals, 551=Multiscores
+// 1st Half: 60=1H 1X2, 68=1H O/U, 63=1H DC, 64=1H DNB, 75=1H GG/NG, 177=1H Corners, 152=1H Bookings, 800064=1H Cards
+// Combos & Or Shields: 547=DC & O/U, 546=DC & GG/NG, 37=1X2 & O/U, 35=1X2 & GG/NG, 36=O/U & GG/NG, 854/858=Team or O2.5, 860/862=Team or GG, 1179=1H or FT Result
+// Props: Corners (166,162,900300,900301), Cards (139,136,900304,900305,800063), Shots/SOT (900394,900320,900552,900553,900393,900318,900546,900547,800054),
+// Offsides (900396,900570,900568,900569), Fouls (900342,900539,900544,900545), Throw-Ins/Goal Kicks (900769,900770)
 const SOCCER_BULK_MARKETS = [
   '1', '60200', '60100', '18', '10', '29', '11', '14',
   '19', '20', '26', '31', '32', '33', '34',
   '45', '47', '548', '551', '900984',
+  '60', '68', '63', '64', '75', '152',
+  '547', '546', '37', '35', '36', '854', '858', '860', '862', '1179',
   '166', '162', '177', '900300', '900301',
-  '139', '136', '900304', '900305',
-  '900394', '900320', '900552', '900553',
+  '139', '136', '900304', '900305', '800063', '800064',
+  '900394', '900320', '900552', '900553', '800054',
   '900393', '900318', '900546', '900547',
-  '900396', '900568', '900569',
+  '900396', '900570', '900568', '900569',
   '900342', '900539', '900544', '900545',
   '900769', '900770',
 ].join(',');
@@ -186,23 +191,35 @@ export async function getSportyCatalog(force = false) {
       }
     }
 
-    // Deep-enrich top 16 marquee soccer matches with full 350+ market details (Shots 1X2, SOT, Team Shots, Throw-Ins, Goal Kicks, Cards, Corners)
+    // Deep-enrich top 40 upcoming/marquee soccer matches with full 200-650+ market trees
+    // (Player Props, 1st Half markets, Combo & Or Shields, Shots 1X2, SOT, Throw-Ins, Goal Kicks, Cards, Corners)
     const marquee = [...byId.values()]
       .filter((ev) => ev.sportType === 'soccer' && (ev.markets?.length || 0) >= 6)
-      .slice(0, 16);
-    await Promise.all(marquee.map(async (ev) => {
-      const det = await getSportyEventDetail(ev.eventId);
-      if (det?.markets?.length) {
-        const existingKeys = new Set((ev.markets || []).map((m) => `${m.id}|${m.specifier || ''}`));
-        for (const dm of det.markets) {
-          const k = `${dm.id}|${dm.specifier || ''}`;
-          if (!existingKeys.has(k)) {
-            ev.markets.push(dm);
-            existingKeys.add(k);
+      .sort((a, b) => {
+        const depthA = Math.min(35, a.markets?.length || 0);
+        const depthB = Math.min(35, b.markets?.length || 0);
+        const soonA = a.estimateStartTime - Date.now() <= 36 * 3600 * 1000 ? 25 : 0;
+        const soonB = b.estimateStartTime - Date.now() <= 36 * 3600 * 1000 ? 25 : 0;
+        return (depthB + soonB) - (depthA + soonA) || a.estimateStartTime - b.estimateStartTime;
+      })
+      .slice(0, 40);
+
+    for (let i = 0; i < marquee.length; i += 8) {
+      const batch = marquee.slice(i, i + 8);
+      await Promise.all(batch.map(async (ev) => {
+        const det = await getSportyEventDetail(ev.eventId);
+        if (det?.markets?.length) {
+          const existingKeys = new Set((ev.markets || []).map((m) => `${m.id}|${m.specifier || ''}`));
+          for (const dm of det.markets) {
+            const k = `${dm.id}|${dm.specifier || ''}`;
+            if (!existingKeys.has(k)) {
+              ev.markets.push(dm);
+              existingKeys.add(k);
+            }
           }
         }
-      }
-    }));
+      }));
+    }
 
     const events = [...byId.values()]
       .filter((ev) => ev.estimateStartTime > minBookableStart)
@@ -211,6 +228,11 @@ export async function getSportyCatalog(force = false) {
       catalogCache.events = events;
       catalogCache.byId = byId;
       catalogCache.ts = Date.now();
+      try {
+        recordCatalogOddsSnapshot(events);
+      } catch (snapErr) {
+        console.warn('[sportybet] odds snapshot warning:', snapErr.message);
+      }
     }
     return catalogCache.events.filter((ev) => ev.estimateStartTime > minBookableStart);
   } catch (err) {
@@ -378,12 +400,29 @@ function buildCrossMarketFairMap(markets, sportType = 'soccer') {
   const hOver = { '0.5': 0, '1.5': 0, '2.5': 0 };
   const aOver = { '0.5': 0, '1.5': 0, '2.5': 0 };
 
+  // Joint combo accumulators across exact FT (i, j) grid
+  const dcOu = {
+    '1.5': { '1x_over': 0, 'x2_over': 0, '12_over': 0, '1x_under': 0, 'x2_under': 0, '12_under': 0 },
+    '2.5': { '1x_over': 0, 'x2_over': 0, '12_over': 0, '1x_under': 0, 'x2_under': 0, '12_under': 0 },
+    '3.5': { '1x_over': 0, 'x2_over': 0, '12_over': 0, '1x_under': 0, 'x2_under': 0, '12_under': 0 },
+  };
+  const m1x2Ou = {
+    '1.5': { home_over: 0, away_over: 0, home_under: 0, away_under: 0 },
+    '2.5': { home_over: 0, away_over: 0, home_under: 0, away_under: 0 },
+  };
+  let dc1xGG = 0, dc1xNG = 0, dc12GG = 0, dc12NG = 0, dcx2GG = 0, dcx2NG = 0;
+  let hGG = 0, hNG = 0, aGG = 0, aNG = 0, o25GG = 0, u25NG = 0;
+  let homeOrO25 = 0, awayOrO25 = 0, homeOrGG = 0, awayOrGG = 0;
+
   for (let i = 0; i <= 9; i++) {
     for (let j = 0; j <= 9; j++) {
       const p = grid[i][j] / sumG;
-      if (i > j) cH += p; else if (i === j) cD += p; else cA += p;
-      if (i >= 1 && j >= 1) gg += p;
+      const isH = i > j, isD = i === j, isA = j > i;
+      const isGG = i >= 1 && j >= 1;
       const tot = i + j;
+
+      if (isH) cH += p; else if (isD) cD += p; else cA += p;
+      if (isGG) gg += p;
       if (tot >= 1) totOver['0.5'] += p;
       if (tot >= 2) totOver['1.5'] += p;
       if (tot >= 3) totOver['2.5'] += p;
@@ -395,8 +434,48 @@ function buildCrossMarketFairMap(markets, sportType = 'soccer') {
       if (j >= 1) aOver['0.5'] += p;
       if (j >= 2) aOver['1.5'] += p;
       if (j >= 3) aOver['2.5'] += p;
+
+      for (const [ln, thresh] of [['1.5', 2], ['2.5', 3], ['3.5', 4]]) {
+        const ov = tot >= thresh;
+        if (isH || isD) dcOu[ln][ov ? '1x_over' : '1x_under'] += p;
+        if (isD || isA) dcOu[ln][ov ? 'x2_over' : 'x2_under'] += p;
+        if (isH || isA) dcOu[ln][ov ? '12_over' : '12_under'] += p;
+      }
+      for (const [ln, thresh] of [['1.5', 2], ['2.5', 3]]) {
+        const ov = tot >= thresh;
+        if (isH) m1x2Ou[ln][ov ? 'home_over' : 'home_under'] += p;
+        if (isA) m1x2Ou[ln][ov ? 'away_over' : 'away_under'] += p;
+      }
+      if (isH || isD) { if (isGG) dc1xGG += p; else dc1xNG += p; }
+      if (isH || isA) { if (isGG) dc12GG += p; else dc12NG += p; }
+      if (isD || isA) { if (isGG) dcx2GG += p; else dcx2NG += p; }
+      if (isH) { if (isGG) hGG += p; else hNG += p; }
+      if (isA) { if (isGG) aGG += p; else aNG += p; }
+      if (tot >= 3 && isGG) o25GG += p;
+      if (tot <= 2 && !isGG) u25NG += p;
+      if (isH || tot >= 3) homeOrO25 += p;
+      if (isA || tot >= 3) awayOrO25 += p;
+      if (isH || isGG) homeOrGG += p;
+      if (isA || isGG) awayOrGG += p;
     }
   }
+
+  // Exact 1st-Half Poisson grid (~44% of total match goal rate occurs in 1st Half)
+  const ph1 = poisPmf(lamH * 0.44, 6);
+  const pa1 = poisPmf(lamA * 0.44, 6);
+  let fhH = 0, fhD = 0, fhA = 0, fhGG = 0, fhO05 = 0, fhO15 = 0, fhO25 = 0;
+  for (let i = 0; i <= 6; i++) {
+    for (let j = 0; j <= 6; j++) {
+      const p1 = ph1[i] * pa1[j];
+      if (i > j) fhH += p1; else if (i === j) fhD += p1; else fhA += p1;
+      if (i >= 1 && j >= 1) fhGG += p1;
+      if (i + j >= 1) fhO05 += p1;
+      if (i + j >= 2) fhO15 += p1;
+      if (i + j >= 3) fhO25 += p1;
+    }
+  }
+  const fhSum = Math.max(1e-6, fhH + fhD + fhA);
+  fhH /= fhSum; fhD /= fhSum; fhA /= fhSum;
 
   const early1UpBoost = Math.min(0.11, 0.28 * cD + 0.042);
   map.set('1up:home', Math.min(0.95, cH + early1UpBoost));
@@ -420,6 +499,54 @@ function buildCrossMarketFairMap(markets, sportType = 'soccer') {
     map.set(`awayou${ln}:over`, pv);
     map.set(`awayou${ln}:under`, 1 - pv);
   }
+
+  // 1st Half fair probabilities
+  map.set('1h_1x2:home', fhH);
+  map.set('1h_1x2:draw', fhD);
+  map.set('1h_1x2:away', fhA);
+  map.set('1h_dc:1x', Math.min(0.97, fhH + fhD));
+  map.set('1h_dc:12', Math.min(0.97, fhH + fhA));
+  map.set('1h_dc:x2', Math.min(0.97, fhD + fhA));
+  map.set('1h_dnb:home', fhH / Math.max(0.05, fhH + fhA));
+  map.set('1h_dnb:away', fhA / Math.max(0.05, fhH + fhA));
+  map.set('1h_ggng:gg', fhGG);
+  map.set('1h_ggng:ng', 1 - fhGG);
+  map.set('1h_ou0.5:over', fhO05);
+  map.set('1h_ou0.5:under', 1 - fhO05);
+  map.set('1h_ou1.5:over', fhO15);
+  map.set('1h_ou1.5:under', 1 - fhO15);
+  map.set('1h_ou2.5:over', fhO25);
+  map.set('1h_ou2.5:under', 1 - fhO25);
+
+  // Joint Combos & "Or" Shields fair probabilities
+  for (const [ln, obj] of Object.entries(dcOu)) {
+    for (const [k, v] of Object.entries(obj)) map.set(`dc_ou${ln}:${k}`, v);
+  }
+  for (const [ln, obj] of Object.entries(m1x2Ou)) {
+    for (const [k, v] of Object.entries(obj)) map.set(`1x2_ou${ln}:${k}`, v);
+  }
+  map.set('dc_ggng:1x_gg', dc1xGG);
+  map.set('dc_ggng:1x_ng', dc1xNG);
+  map.set('dc_ggng:12_gg', dc12GG);
+  map.set('dc_ggng:12_ng', dc12NG);
+  map.set('dc_ggng:x2_gg', dcx2GG);
+  map.set('dc_ggng:x2_ng', dcx2NG);
+  map.set('1x2_ggng:home_gg', hGG);
+  map.set('1x2_ggng:home_ng', hNG);
+  map.set('1x2_ggng:away_gg', aGG);
+  map.set('1x2_ggng:away_ng', aNG);
+  map.set('ou_ggng2.5:over_gg', o25GG);
+  map.set('ou_ggng2.5:under_ng', u25NG);
+  map.set('home_or_o25:yes', Math.min(0.96, homeOrO25));
+  map.set('away_or_o25:yes', Math.min(0.96, awayOrO25));
+  map.set('home_or_gg:yes', Math.min(0.96, homeOrGG));
+  map.set('away_or_gg:yes', Math.min(0.96, awayOrGG));
+  // 1st Half Result or FT Result: P(HT Win OR FT Win) = P(FT Win) + P(HT Win & NOT FT Win)
+  // Using independent 2nd-half Poisson (lamH2 = 0.56*lamH, lamA2 = 0.56*lamA), P(HT Win U FT Win) ~= cH + fhH * (1 - cH) * 0.34
+  map.set('ht_or_ft:home', Math.min(0.95, cH + fhH * (1 - cH) * 0.36));
+  map.set('ht_or_ft:draw', Math.min(0.92, cD + fhD * (1 - cD) * 0.55));
+  map.set('ht_or_ft:away', Math.min(0.95, cA + fhA * (1 - cA) * 0.36));
+
   return map;
 }
 
@@ -478,18 +605,21 @@ export function extractBookableSelections(ev, modelPred = null) {
 
     const fair = +(1 / Math.max(p, 1e-4)).toFixed(2);
     const edge = +((p * numOdds - 1) * 100).toFixed(1);
-    const steamPct = +(((1 / numOdds) - validBr) * 100).toFixed(1);
+    const oddsMov = getSelectionMovement(ev.eventId, marketId, specifier, outcomeId);
+    const liveDropSteam = oddsMov?.dropPct > 0 ? oddsMov.impliedJumpPct : 0;
+    const steamPct = +Math.max(((1 / numOdds) - validBr) * 100, liveDropSteam).toFixed(1);
 
     // Quarter-Kelly recommended bankroll stake % (capped 0.5% - 6.0%)
     const b = numOdds - 1;
     const fullKelly = b > 0 ? (p * numOdds - 1) / b : 0;
     const kellyPct = fullKelly > 0 ? +Math.min(6.0, Math.max(0.5, fullKelly * 25)).toFixed(2) : 0;
 
-    // Composite Vhim Smart Score: probability + low bookmaker margin + positive EV / steam + model consensus
+    // Composite Vhim Smart Score: probability + low bookmaker margin + positive EV + real time-series steam + model consensus
     const lowJuiceBonus = Math.max(-0.02, Math.min(0.025, (6.5 - marginPct) * 0.004));
     const evBonus = Math.max(-0.025, Math.min(0.045, edge * 0.0035));
     const agreementBonus = modelP != null && Math.abs(modelP - validBr) <= 0.06 ? 0.025 : 0;
-    const vhimScore = +(p + lowJuiceBonus + evBonus + agreementBonus).toFixed(4);
+    const timeSeriesBonus = oddsMov?.isSteamCrash ? Math.min(0.03, oddsMov.dropPct * 0.0025) : 0;
+    const vhimScore = +(p + lowJuiceBonus + evBonus + agreementBonus + timeSeriesBonus).toFixed(4);
 
     selections.push({
       id: `${ev.eventId}:${marketId}:${specifier}:${outcomeId}`,
@@ -528,6 +658,7 @@ export function extractBookableSelections(ev, modelPred = null) {
       sportyOdds: +numOdds.toFixed(2),
       userOdds: +numOdds.toFixed(2),
       edgePct: edge,
+      ...(oddsMov && oddsMov.snapshotsCount >= 2 ? { oddsMovement: oddsMov } : {}),
       sportySelection: {
         eventId: ev.eventId,
         marketId: String(marketId),
@@ -973,17 +1104,30 @@ export function extractBookableSelections(ev, modelPred = null) {
           modelP: modelMap.get(`${mktKey}:${key}`),
         });
       }
-    } else if (['900304', '900305', '800063'].includes(mid)) {
+    } else if (['900304', '900305', '800063', '800064', '152'].includes(mid)) {
       const mLine = spec.match(/total=([0-9.]+)/);
       const line = mLine ? mLine[1] : '';
-      const prefix = mid === '900304' ? `${ev.homeTeamName} Cards` : mid === '900305' ? `${ev.awayTeamName} Cards` : 'Match Cards';
+      const prefix = mid === '900304'
+        ? `${ev.homeTeamName} Cards`
+        : mid === '900305'
+          ? `${ev.awayTeamName} Cards`
+          : mid === '800064' || mid === '152'
+            ? '1st Half Cards'
+            : 'Match Cards';
+      const isMilestone = mid === '800063' || mid === '800064';
       for (const o of outs) {
         const isOver = o.id === '12' || o.id === '30' || /^over|\+/i.test(o.desc);
-        const key = mid === '800063' ? o.id : (isOver ? 'over' : 'under');
+        const key = isMilestone ? String(o.desc || o.id).toLowerCase() : (isOver ? 'over' : 'under');
         pushSel({
           group: 'Cards',
-          marketKey: mid === '800063' ? 'cards_milestone' : `cards_${mid === '900304' ? 'home' : 'away'}_ou${line}`,
-          marketName: mid === '800063' ? 'Match Cards Milestone' : `${prefix} O/U ${line}`,
+          marketKey: mid === '800063'
+            ? 'cards_milestone'
+            : mid === '800064'
+              ? 'cards_1h_milestone'
+              : mid === '152'
+                ? `cards_1h_ou${line}`
+                : `cards_${mid === '900304' ? 'home' : 'away'}_ou${line}`,
+          marketName: isMilestone ? `${prefix} Milestone` : `${prefix} O/U ${line}`,
           sportyMarket: prefix,
           selKey: key,
           label: `${prefix}: ${o.desc}`,
@@ -996,36 +1140,40 @@ export function extractBookableSelections(ev, modelPred = null) {
         });
       }
     }
-    // 14. Throw-Ins (900769), Goal Kicks (900770 / desc match), Offsides (900396/900568/900569), Fouls (900342/900539/900544/900545)
+    // 14. Throw-Ins (900769 / desc), Goal Kicks (900770 / desc), Offsides (900396/900570/900568/900569), Fouls (900342/900539/900544/900545)
     else if (
-      ['900396', '900568', '900569', '900342', '900539', '900544', '900545', '900769', '900770'].includes(mid) ||
+      ['900396', '900570', '900568', '900569', '900342', '900539', '900544', '900545', '900769', '900770'].includes(mid) ||
       /throw.?in|goal.?kick/i.test(m.desc || m.name || '')
     ) {
       const rawDesc = m.desc || m.name || '';
       const isThrow = mid === '900769' || /throw.?in/i.test(rawDesc);
-      const isGk = mid === '900770' || /goal.?kick/i.test(rawDesc);
-      const isOff = ['900396', '900568', '900569'].includes(mid);
+      const isGk = (!isThrow && mid === '900770') || /goal.?kick/i.test(rawDesc);
+      const isOff = ['900396', '900570', '900568', '900569'].includes(mid);
       const grp = isThrow || isGk ? 'Throws & Goal Kicks' : 'Offsides & fouls';
+      const is1x2Stat = mid === '900539' || mid === '900570' || /1x2|most/i.test(rawDesc) || (!spec && outs.some((o) => o.id === '1' || /home/i.test(o.desc)));
 
-      if (mid === '900539') {
+      if (is1x2Stat) {
+        const statLabel = isThrow ? 'Throw-Ins' : isGk ? 'Goal Kicks' : isOff ? 'Offsides' : 'Fouls';
+        const statKey = isThrow ? 'throwins_1x2' : isGk ? 'goalkicks_1x2' : isOff ? 'offsides_1x2' : 'fouls_1x2';
         for (const o of outs) {
-          if (o.id === '2') continue;
-          const key = o.id === '1' ? 'home' : 'away';
-          const team = o.id === '1' ? ev.homeTeamName : ev.awayTeamName;
+          if (o.id === '2' || /draw|tie/i.test(o.desc)) continue;
+          const isHome = o.id === '1' || /home/i.test(o.desc);
+          const key = isHome ? 'home' : 'away';
+          const team = isHome ? ev.homeTeamName : ev.awayTeamName;
           pushSel({
-            group: 'Offsides & fouls',
-            marketKey: 'fouls_1x2',
-            marketName: 'Most Fouls Committed (1X2)',
-            sportyMarket: 'Fouls 1X2',
+            group: grp,
+            marketKey: statKey,
+            marketName: `Most ${statLabel} (1X2)`,
+            sportyMarket: `${statLabel} 1X2`,
             selKey: key,
-            label: `Most Fouls: ${team}`,
-            sportyPick: `Fouls ${o.desc}`,
+            label: `Most ${statLabel}: ${team}`,
+            sportyPick: `${statLabel} ${o.desc}`,
             marketId: mid,
             outcomeId: o.id,
-            specifier: '',
+            specifier: spec,
             odds: o.odds,
             brProb: o.probability,
-            modelP: modelMap.get(`fouls_1x2:${key}`),
+            modelP: modelMap.get(`${statKey}:${key}`),
           });
         }
       } else {
@@ -1057,6 +1205,301 @@ export function extractBookableSelections(ev, modelPred = null) {
             modelP: modelMap.get(`${statKey}_ou${line}:${key}`),
           });
         }
+      }
+    }
+    // 14B. 1st Half Core Markets: 60 (1H 1X2), 68 (1H O/U), 63 (1H DC), 64 (1H DNB), 75 (1H GG/NG)
+    else if (mid === '60') {
+      for (const o of outs) {
+        const key = o.id === '1' ? 'home' : o.id === '2' ? 'draw' : 'away';
+        const team = o.id === '1' ? `${ev.homeTeamName} (1H)` : o.id === '2' ? '1st Half Draw (X)' : `${ev.awayTeamName} (1H)`;
+        pushSel({
+          group: '1st Half',
+          marketKey: '1h_1x2',
+          marketName: '1st Half - 1X2',
+          sportyMarket: '1st Half 1X2',
+          selKey: key,
+          label: team,
+          sportyPick: `1H ${o.desc}`,
+          marketId: '60',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    } else if (mid === '68') {
+      const mLine = spec.match(/total=([0-9.]+)/);
+      const line = mLine ? mLine[1] : '';
+      if (['0.5', '1.5', '2.5'].includes(line)) {
+        for (const o of outs) {
+          const isOver = o.id === '12' || /^over/i.test(o.desc);
+          const key = isOver ? 'over' : 'under';
+          pushSel({
+            group: '1st Half',
+            marketKey: `1h_ou${line}`,
+            marketName: `1st Half Goals ${line}`,
+            sportyMarket: `1H O/U (${line})`,
+            selKey: key,
+            label: `1st Half ${isOver ? 'Over' : 'Under'} ${line} Goals`,
+            sportyPick: `1H ${isOver ? 'Over' : 'Under'} ${line}`,
+            marketId: '68',
+            outcomeId: o.id,
+            specifier: spec,
+            odds: o.odds,
+            brProb: o.probability,
+          });
+        }
+      }
+    } else if (mid === '63') {
+      for (const o of outs) {
+        const key = o.id === '9' ? '1x' : o.id === '10' ? '12' : 'x2';
+        pushSel({
+          group: '1st Half',
+          marketKey: '1h_dc',
+          marketName: '1st Half - Double Chance',
+          sportyMarket: '1H Double Chance',
+          selKey: key,
+          label: `1st Half DC: ${o.desc}`,
+          sportyPick: `1H ${o.desc}`,
+          marketId: '63',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    } else if (mid === '64') {
+      for (const o of outs) {
+        const key = o.id === '4' ? 'home' : 'away';
+        const team = key === 'home' ? ev.homeTeamName : ev.awayTeamName;
+        pushSel({
+          group: '1st Half',
+          marketKey: '1h_dnb',
+          marketName: '1st Half - Draw No Bet',
+          sportyMarket: '1H DNB',
+          selKey: key,
+          label: `1st Half DNB: ${team}`,
+          sportyPick: `1H DNB ${o.desc}`,
+          marketId: '64',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    } else if (mid === '75') {
+      for (const o of outs) {
+        const isGG = o.id === '74' || /yes/i.test(o.desc);
+        const key = isGG ? 'gg' : 'ng';
+        pushSel({
+          group: '1st Half',
+          marketKey: '1h_ggng',
+          marketName: '1st Half - GG/NG',
+          sportyMarket: '1H GG/NG',
+          selKey: key,
+          label: isGG ? '1st Half GG (Yes)' : '1st Half NG (No)',
+          sportyPick: `1H ${isGG ? 'GG' : 'NG'}`,
+          marketId: '75',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    }
+    // 14C. High-Accuracy Combo & "Or" Shield Markets (547, 546, 37, 35, 36, 854, 858, 860, 862, 1179)
+    else if (mid === '547') {
+      const mLine = spec.match(/total=([0-9.]+)/);
+      const line = mLine ? mLine[1] : '';
+      if (['1.5', '2.5', '3.5'].includes(line)) {
+        for (const o of outs) {
+          const d = String(o.desc || '').toLowerCase();
+          const dcPart = d.includes('home/draw') ? '1x' : d.includes('draw/away') ? 'x2' : d.includes('home/away') ? '12' : null;
+          const ouPart = d.includes('over') ? 'over' : d.includes('under') ? 'under' : null;
+          if (!dcPart || !ouPart) continue;
+          pushSel({
+            group: 'Combos',
+            marketKey: `dc_ou${line}`,
+            marketName: `Double Chance & O/U ${line}`,
+            sportyMarket: `DC & O/U (${line})`,
+            selKey: `${dcPart}_${ouPart}`,
+            label: `${o.desc}`,
+            sportyPick: o.desc,
+            marketId: '547',
+            outcomeId: o.id,
+            specifier: spec,
+            odds: o.odds,
+            brProb: o.probability,
+          });
+        }
+      }
+    } else if (mid === '546') {
+      for (const o of outs) {
+        const d = String(o.desc || '').toLowerCase();
+        const dcPart = d.includes('home/draw') ? '1x' : d.includes('draw/away') ? 'x2' : d.includes('home/away') ? '12' : null;
+        const ggPart = d.includes('yes') ? 'gg' : d.includes('no') ? 'ng' : null;
+        if (!dcPart || !ggPart) continue;
+        pushSel({
+          group: 'Combos',
+          marketKey: 'dc_ggng',
+          marketName: 'Double Chance & GG/NG',
+          sportyMarket: 'DC & GG/NG',
+          selKey: `${dcPart}_${ggPart}`,
+          label: `DC & BTTS: ${o.desc}`,
+          sportyPick: o.desc,
+          marketId: '546',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    } else if (mid === '37') {
+      const mLine = spec.match(/total=([0-9.]+)/);
+      const line = mLine ? mLine[1] : '';
+      if (['1.5', '2.5'].includes(line)) {
+        for (const o of outs) {
+          const d = String(o.desc || '').toLowerCase();
+          const sidePart = d.startsWith('home') ? 'home' : d.startsWith('away') ? 'away' : null;
+          const ouPart = d.includes('over') ? 'over' : d.includes('under') ? 'under' : null;
+          if (!sidePart || !ouPart) continue;
+          pushSel({
+            group: 'Combos',
+            marketKey: `1x2_ou${line}`,
+            marketName: `1X2 & O/U ${line}`,
+            sportyMarket: `1X2 & O/U (${line})`,
+            selKey: `${sidePart}_${ouPart}`,
+            label: o.desc,
+            sportyPick: o.desc,
+            marketId: '37',
+            outcomeId: o.id,
+            specifier: spec,
+            odds: o.odds,
+            brProb: o.probability,
+          });
+        }
+      }
+    } else if (mid === '35') {
+      for (const o of outs) {
+        const d = String(o.desc || '').toLowerCase();
+        const sidePart = d.startsWith('home') ? 'home' : d.startsWith('away') ? 'away' : null;
+        const ggPart = d.includes('yes') ? 'gg' : d.includes('no') ? 'ng' : null;
+        if (!sidePart || !ggPart) continue;
+        pushSel({
+          group: 'Combos',
+          marketKey: '1x2_ggng',
+          marketName: '1X2 & GG/NG',
+          sportyMarket: '1X2 & GG/NG',
+          selKey: `${sidePart}_${ggPart}`,
+          label: `1X2 & BTTS: ${o.desc}`,
+          sportyPick: o.desc,
+          marketId: '35',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    } else if (mid === '36') {
+      const mLine = spec.match(/total=([0-9.]+)/);
+      const line = mLine ? mLine[1] : '2.5';
+      if (line === '2.5') {
+        for (const o of outs) {
+          const d = String(o.desc || '').toLowerCase();
+          const key = d.includes('over') && d.includes('yes') ? 'over_gg' : d.includes('under') && d.includes('no') ? 'under_ng' : null;
+          if (!key) continue;
+          pushSel({
+            group: 'Combos',
+            marketKey: 'ou_ggng2.5',
+            marketName: 'Over/Under 2.5 & GG/NG',
+            sportyMarket: 'O/U 2.5 & GG/NG',
+            selKey: key,
+            label: o.desc,
+            sportyPick: o.desc,
+            marketId: '36',
+            outcomeId: o.id,
+            specifier: spec,
+            odds: o.odds,
+            brProb: o.probability,
+          });
+        }
+      }
+    } else if (['854', '858', '860', '862'].includes(mid)) {
+      const yesOut = outs.find((o) => o.id === '74' || /yes/i.test(o.desc));
+      if (yesOut) {
+        const cfgMap = {
+          '854': { mk: 'home_or_o25', lbl: `${ev.homeTeamName} Win OR Over 2.5 Goals`, sp: 'Home or Over 2.5' },
+          '858': { mk: 'away_or_o25', lbl: `${ev.awayTeamName} Win OR Over 2.5 Goals`, sp: 'Away or Over 2.5' },
+          '860': { mk: 'home_or_gg', lbl: `${ev.homeTeamName} Win OR GG (BTTS)`, sp: 'Home or GG' },
+          '862': { mk: 'away_or_gg', lbl: `${ev.awayTeamName} Win OR GG (BTTS)`, sp: 'Away or GG' },
+        };
+        const cfg = cfgMap[mid];
+        pushSel({
+          group: 'Combos',
+          marketKey: cfg.mk,
+          marketName: cfg.sp,
+          sportyMarket: cfg.sp,
+          selKey: 'yes',
+          label: `🛡️ ${cfg.lbl}`,
+          sportyPick: `${cfg.sp} - Yes`,
+          marketId: mid,
+          outcomeId: yesOut.id,
+          specifier: spec,
+          odds: yesOut.odds,
+          brProb: yesOut.probability,
+        });
+      }
+    } else if (mid === '1179') {
+      for (const o of outs) {
+        const key = o.id === '1' ? 'home' : o.id === '2' ? 'draw' : 'away';
+        const targetLbl = key === 'home'
+          ? `${ev.homeTeamName} Wins 1st Half OR Match`
+          : key === 'away'
+            ? `${ev.awayTeamName} Wins 1st Half OR Match`
+            : 'Draw in 1st Half OR Full-Time';
+        pushSel({
+          group: 'Combos',
+          marketKey: 'ht_or_ft',
+          marketName: '1st Half or Match Result',
+          sportyMarket: '1H or FT Result',
+          selKey: key,
+          label: `🛡️ ${targetLbl}`,
+          sportyPick: `1H or FT ${o.desc}`,
+          marketId: '1179',
+          outcomeId: o.id,
+          specifier: '',
+          odds: o.odds,
+          brProb: o.probability,
+        });
+      }
+    }
+    // 14D. Player Stat Props (only in full-event payloads: 776 Player Shots, 777 Player SOT, 800297 GK Saves, 800289 Score/Assist)
+    else if (['776', '777', '800297', '800289'].includes(mid)) {
+      const propCfg = {
+        '776': { mk: 'player_shots', name: 'Player Total Shots', tag: 'Shots' },
+        '777': { mk: 'player_sot', name: 'Player Shots on Target', tag: 'SOT' },
+        '800297': { mk: 'player_saves', name: 'Goalkeeper Saves', tag: 'GK Saves' },
+        '800289': { mk: 'player_score_assist', name: 'Player To Score or Assist', tag: 'Score/Assist' },
+      }[mid];
+      // Single-outcome / milestone player prop markets don't form a mutually exclusive 100% book, so reset curInvSum
+      curInvSum = 0;
+      for (const o of outs) {
+        const numOdds = Number(o.odds);
+        if (!Number.isFinite(numOdds) || numOdds < 1.16 || numOdds > 2.38) continue;
+        pushSel({
+          group: 'Player Props',
+          marketKey: propCfg.mk,
+          marketName: propCfg.name,
+          sportyMarket: m.desc || propCfg.name,
+          selKey: String(o.id),
+          label: `👤 ${propCfg.tag}: ${o.desc}`,
+          sportyPick: o.desc,
+          marketId: mid,
+          outcomeId: o.id,
+          specifier: spec,
+          odds: o.odds,
+          brProb: o.probability,
+        });
       }
     }
     // 15. Halftime/Fulltime (47), Odd/Even (26), Clean Sheet (31/32), Win to Nil (33/34)
@@ -1288,22 +1731,30 @@ export async function loadSportyBookingCode(code) {
     throw new Error(json.message || `Booking code "${clean}" was not found or has expired on SportyBet Ghana.`);
   }
 
+  const now = Date.now();
+  const minBookableMs = now + 3 * 60 * 1000;
   const legs = [];
   for (const ev of json.data.outcomes) {
+    const startMs = Number(ev.estimateStartTime) || 0;
+    const evStatus = Number(ev.status || 0);
+    const isStarted = (startMs > 0 && startMs <= minBookableMs) || evStatus > 0 || Boolean(ev.banned);
     for (const m of ev.markets || []) {
+      const mktStatus = Number(m.status ?? 0);
       for (const o of m.outcomes || []) {
         const odds = Number(o.odds) || 1.5;
         const rawProb = Number(o.probability);
         const p = Number.isFinite(rawProb) && rawProb > 0.001 && rawProb < 0.999 ? +rawProb.toFixed(4) : +(0.945 / odds).toFixed(4);
         const fair = +(1 / Math.max(p, 1e-4)).toFixed(2);
         const edge = +((p * odds - 1) * 100).toFixed(1);
+        const isLocked = isStarted || o.isActive === 0 || (mktStatus !== 0 && mktStatus !== 1 && m.isActive === 0);
 
         legs.push({
           id: `${ev.eventId}:${m.id}:${m.specifier || ''}:${o.id}`,
           gameId: ev.eventId,
           sportyGameId: ev.gameId,
           eventId: ev.eventId,
-          date: new Date(ev.estimateStartTime).toISOString(),
+          startTime: startMs || null,
+          date: startMs ? new Date(startMs).toISOString() : null,
           matchup: `${ev.homeTeamName} vs ${ev.awayTeamName}`,
           home: ev.homeTeamName,
           away: ev.awayTeamName,
@@ -1322,7 +1773,18 @@ export async function loadSportyBookingCode(code) {
           sportyOdds: +odds.toFixed(2),
           userOdds: +odds.toFixed(2),
           edgePct: edge,
-          verdict: p >= 0.70 ? 'Strong Banker' : edge >= 0 ? 'Positive Value' : p < 0.35 ? 'High Risk Trap' : 'Fair Leg',
+          isStarted,
+          isLocked,
+          lockReason: isStarted ? 'Started / Finished' : isLocked ? 'Market Suspended' : null,
+          verdict: isLocked
+            ? 'Started / Locked'
+            : p >= 0.70
+              ? 'Strong Banker'
+              : edge >= 0
+                ? 'Positive Value'
+                : p < 0.35
+                  ? 'High Risk Trap'
+                  : 'Fair Leg',
           sportySelection: {
             eventId: ev.eventId,
             marketId: String(m.id),
@@ -1338,11 +1800,14 @@ export async function loadSportyBookingCode(code) {
   const totalSportyOdds = +(legs.reduce((a, b) => a * (b.sportyOdds || b.fairOdds || 1), 1)).toFixed(2);
   const combinedFairOdds = legs.length ? +(1 / Math.max(combP, 1e-6)).toFixed(2) : 0;
   const traps = legs.filter((l) => l.p < 0.42);
+  const startedCount = legs.filter((l) => l.isLocked || l.isStarted).length;
 
   return {
     shareCode: clean,
     shareURL: `https://www.sportybet.com/gh/?shareCode=${clean}`,
     count: legs.length,
+    startedCount,
+    activeCount: legs.length - startedCount,
     legs,
     combinedProb: +combP.toFixed(4),
     combinedFairOdds,
@@ -1351,3 +1816,143 @@ export async function loadSportyBookingCode(code) {
     overallRating: traps.length === 0 && combP >= 0.15 ? 'A+ Vhim Approved' : traps.length <= 1 ? 'B+ Playable' : 'C — Contains Trap Legs (Remove Weak Picks)',
   };
 }
+
+/**
+ * Strip started, finished, or suspended legs from an existing SportyBet Ghana booking code (or leg array)
+ * and immediately mint a fresh 6-character SportyBet Ghana booking code for all remaining pre-match legs!
+ */
+export async function stripStartedAndRebook({ shareCode = null, selections = null } = {}) {
+  let sourceLegs = [];
+  let originalCode = shareCode ? String(shareCode).trim().toUpperCase().replace(/[^A-Z0-9]/g, '') : null;
+
+  if (originalCode) {
+    const decoded = await loadSportyBookingCode(originalCode);
+    sourceLegs = decoded.legs || [];
+  } else if (Array.isArray(selections) && selections.length) {
+    sourceLegs = selections;
+  } else {
+    throw new Error('Provide either a SportyBet booking code or a non-empty selections array.');
+  }
+
+  await getSportyCatalog();
+  const now = Date.now();
+  const minBookableMs = now + 3 * 60 * 1000;
+  const keptLegs = [];
+  const strippedLegs = [];
+
+  for (const leg of sourceLegs) {
+    if (leg.isLocked || leg.isStarted) {
+      strippedLegs.push({
+        matchup: leg.matchup || `${leg.home || ''} vs ${leg.away || ''}`.trim(),
+        label: leg.label || leg.sportyPick || '',
+        reason: leg.lockReason || 'Already kicked off / finished',
+      });
+      continue;
+    }
+
+    const startMs = Number(leg.startTime) || (leg.date ? new Date(leg.date).getTime() : 0);
+    if (startMs > 0 && startMs <= minBookableMs) {
+      strippedLegs.push({
+        matchup: leg.matchup || `${leg.home || ''} vs ${leg.away || ''}`.trim(),
+        label: leg.label || leg.sportyPick || '',
+        reason: 'Already kicked off',
+      });
+      continue;
+    }
+
+    const sel = await resolveSportySelection(leg);
+    if (!sel?.eventId) {
+      strippedLegs.push({
+        matchup: leg.matchup || 'Unknown Match',
+        label: leg.label || '',
+        reason: 'No longer bookable pre-match on SportyBet',
+      });
+      continue;
+    }
+
+    // Verify against live catalog if available and refresh current odds
+    const catEv = catalogCache.byId.get(sel.eventId);
+    if (catEv) {
+      if (Number(catEv.estimateStartTime) <= minBookableMs) {
+        strippedLegs.push({
+          matchup: leg.matchup || `${catEv.homeTeamName} vs ${catEv.awayTeamName}`,
+          label: leg.label || '',
+          reason: 'Kickoff imminent / started',
+        });
+        continue;
+      }
+      const mkt = (catEv.markets || []).find((m) => String(m.id) === String(sel.marketId) && (m.specifier || '') === (sel.specifier || ''));
+      const out = mkt?.outcomes?.find((o) => String(o.id) === String(sel.outcomeId));
+      if (mkt && out && out.isActive === 0) {
+        strippedLegs.push({
+          matchup: leg.matchup || `${catEv.homeTeamName} vs ${catEv.awayTeamName}`,
+          label: leg.label || '',
+          reason: 'Selection suspended by SportyBet',
+        });
+        continue;
+      }
+      const liveOdds = Number(out?.odds) || Number(leg.sportyOdds) || 1.4;
+      keptLegs.push({
+        ...leg,
+        sportyOdds: +liveOdds.toFixed(2),
+        userOdds: +liveOdds.toFixed(2),
+        sportySelection: sel,
+      });
+    } else {
+      // Check live event endpoint directly if not in top 500 catalog cache
+      const det = await getSportyEventDetail(sel.eventId);
+      if (!det || Number(det.estimateStartTime) <= minBookableMs || Number(det.status || 0) > 0) {
+        strippedLegs.push({
+          matchup: leg.matchup || 'Match',
+          label: leg.label || '',
+          reason: 'Match already started or finished',
+        });
+        continue;
+      }
+      keptLegs.push({ ...leg, sportySelection: sel });
+    }
+  }
+
+  if (!keptLegs.length) {
+    return {
+      ok: false,
+      originalCode,
+      strippedCount: strippedLegs.length,
+      keptCount: 0,
+      strippedLegs,
+      error: `All ${strippedLegs.length} game(s) on this slip have already started, finished, or been suspended.`,
+    };
+  }
+
+  const booked = await generateSportyBookingCode(keptLegs.slice(0, SPORTY_MAX_GAMES));
+  if (!booked.ok) {
+    return {
+      ok: false,
+      originalCode,
+      strippedCount: strippedLegs.length,
+      keptCount: keptLegs.length,
+      strippedLegs,
+      error: booked.error || 'SportyBet rejected re-booking the remaining selections.',
+    };
+  }
+
+  const finalLegs = keptLegs.slice(0, SPORTY_MAX_GAMES);
+  const rawProd = finalLegs.reduce((a, b) => a * (Number(b.sportyOdds) || Number(b.fairOdds) || 1.4), 1);
+  const totalSportyOdds = rawProd >= 1000 ? Math.round(rawProd) : +rawProd.toFixed(2);
+  const combinedProb = +finalLegs.reduce((a, b) => a * (Number(b.p) || 0.65), 1).toFixed(6);
+
+  return {
+    ok: true,
+    originalCode,
+    shareCode: booked.shareCode,
+    shareURL: booked.shareURL,
+    originalCount: sourceLegs.length,
+    keptCount: finalLegs.length,
+    strippedCount: strippedLegs.length,
+    strippedLegs,
+    totalSportyOdds,
+    combinedProb,
+    legs: finalLegs,
+  };
+}
+

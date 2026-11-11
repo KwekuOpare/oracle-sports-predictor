@@ -28,9 +28,6 @@ const state = {
   ticketGenTargetOdds: 0,
   ticketGenType: 'mixed',
   ticketGenRisk: 'safe',
-  rolloverCapital: Number(localStorage.getItem('oracle_rollover_cap') || 50),
-  rolloverDoneDays: JSON.parse(localStorage.getItem('oracle_rollover_days') || '[]'),
-  showRolloverPlanner: localStorage.getItem('oracle_hide_rollover') !== '1',
   arenaFilter: 'all',
   arenaSearch: '',
   arenaAutoSync: true,
@@ -653,14 +650,6 @@ window.oracleBookActiveSlip = bookActiveSlipOnSportyBet;
 window.oracleAddPick = (pick) => { addToSlip(pick, true); };
 window.oracleSetSlipTab = (tab) => { state.slipDrawerTab = tab; renderSlip(); };
 window.oracleUpdateStake = (val) => { state.slipStake = Math.max(1, Number(val) || 10); renderSlip(); };
-window.oracleToggleRolloverDay = (dayNum) => {
-  const cur = new Set(state.rolloverDoneDays || []);
-  if (cur.has(dayNum)) cur.delete(dayNum);
-  else cur.add(dayNum);
-  state.rolloverDoneDays = [...cur].sort((a, b) => a - b);
-  localStorage.setItem('oracle_rollover_days', JSON.stringify(state.rolloverDoneDays));
-  if (state.view === 'tickets') renderTickets();
-};
 window.oracleAuditSportyCode = async () => {
   const inp = $('#audit-code-input');
   const code = inp?.value?.trim();
@@ -1325,57 +1314,6 @@ function renderCommandHero(ov) {
     </section>`;
 }
 
-function renderRolloverPlanner(rolloverTicket) {
-  const cap = Math.max(5, Number(state.rolloverCapital) || 50);
-  const mult = rolloverTicket?.totalSportyOdds && rolloverTicket.totalSportyOdds >= 1.7 && rolloverTicket.totalSportyOdds <= 2.7
-    ? rolloverTicket.totalSportyOdds
-    : 2.05;
-  const doneSet = new Set(state.rolloverDoneDays || []);
-
-  if (!state.showRolloverPlanner) {
-    return `
-      <div style="margin-bottom:1rem;display:flex;justify-content:flex-end">
-        <button type="button" class="btn small" id="toggle-rollover-btn">📈 Show 5-Day Bankroll Rollover Compounding Ladder</button>
-      </div>`;
-  }
-
-  let running = cap;
-  const stepsHtml = [1, 2, 3, 4, 5].map((day) => {
-    const startAmt = running;
-    const endAmt = startAmt * mult;
-    running = endAmt;
-    const isDone = doneSet.has(day);
-    const isNext = !isDone && (day === 1 || doneSet.has(day - 1));
-    return `
-      <div class="rollover-step ${isDone ? 'done' : isNext ? 'active' : ''}" onclick="window.oracleToggleRolloverDay(${day})" title="Click to mark Day ${day} completed">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:.76rem;font-weight:800">
-          <span>DAY ${day}</span>
-          <span>${isDone ? '✅ WON' : isNext ? '🎯 TODAY' : '⏳'}</span>
-        </div>
-        <div class="small muted" style="margin-top:.15rem">Stake: ₵${startAmt.toFixed(0)}</div>
-        <div style="font-weight:900;font-size:.98rem;color:var(--good)">→ ₵${endAmt.toFixed(0)}</div>
-      </div>`;
-  }).join('');
-
-  return `
-    <section class="rollover-planner">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
-        <div>
-          <h3 style="margin:0;font-size:1rem">📈 5-Day Safe 2.00x Rollover Compounding Challenge (@${mult.toFixed(2)} Daily Avg)</h3>
-          <span class="small muted">Instead of chasing 500x lottery slips every day, compounding our 2–3 leg Safe Rollover Banker turns <b>₵${cap}</b> into <b>₵${running.toFixed(0)}</b> in 5 days. Click any day to track progress!</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-          <label class="small" style="font-weight:700">Start Capital (₵):
-            <input id="rollover-cap-input" type="number" min="5" step="10" value="${cap}" style="width:80px;padding:.28rem .45rem;border-radius:8px;border:1px solid var(--line);background:var(--panel);font-weight:800">
-          </label>
-          ${rolloverTicket?.shareCode ? `<button type="button" class="btn btn-sporty" style="padding:.35rem .7rem;font-size:.8rem" onclick="window.oracleCopyCode('${esc(rolloverTicket.shareCode)}', this)">🇬🇭 Copy Today's Rollover (${esc(rolloverTicket.shareCode)})</button>` : ''}
-          <button type="button" class="btn" style="padding:.3rem .55rem;font-size:.76rem" id="toggle-rollover-btn">Hide</button>
-        </div>
-      </div>
-      <div class="rollover-steps">${stepsHtml}</div>
-    </section>`;
-}
-
 async function renderTickets() {
   const main = $('#main');
   const win = state.ticketsTimeWindow || 'all';
@@ -1414,7 +1352,6 @@ async function renderTickets() {
       return true;
     });
 
-    const rolloverTicket = allTickets.find((t) => t.id === 'daily-rollover-2x') || overview?.rolloverTicket || allTickets[0];
     const featuredIds = ['daily-rollover-2x', 'twenty-million-mega-50', 'million-odds-grand-slam', 'value-ev-sniper-6'];
     const curatedHtml = filtered.length
       ? filtered.map((t) => renderTicketCard(t, featuredIds.includes(t.id))).join('')
@@ -1435,8 +1372,6 @@ async function renderTickets() {
       </div>
 
       ${renderCommandHero(overview)}
-
-      ${renderRolloverPlanner(rolloverTicket)}
 
       <div class="generator-box">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
@@ -1559,18 +1494,6 @@ async function renderTickets() {
       main.innerHTML = `<p class="loading"><span class="spinner"></span> Refreshing live SportyBet Ghana fixtures, checking match history &amp; booking fresh codes…</p>`;
       await api(`/api/tickets?force=1&window=${encodeURIComponent(win)}`);
       showToast('✓ Fresh history-verified SportyBet Ghana codes booked!', 'ok');
-      renderTickets();
-    });
-
-    $('#toggle-rollover-btn')?.addEventListener('click', () => {
-      state.showRolloverPlanner = !state.showRolloverPlanner;
-      localStorage.setItem('oracle_hide_rollover', state.showRolloverPlanner ? '0' : '1');
-      renderTickets();
-    });
-
-    $('#rollover-cap-input')?.addEventListener('change', (e) => {
-      state.rolloverCapital = Math.max(5, Number(e.target.value) || 50);
-      localStorage.setItem('oracle_rollover_cap', String(state.rolloverCapital));
       renderTickets();
     });
 
@@ -2539,7 +2462,7 @@ function gradeCells(x) {
 window.oraclePlaceInArena = async (ticket) => {
   try {
     const defaultStake = ticket?.id?.includes('cs') ? '50' : '100';
-    const input = prompt(`Place "${ticket.title || 'Cooked Slip'}" in the Live Verification Arena.\nEnter virtual stake in GHS (₵):`, defaultStake);
+    const input = prompt(`Place "${ticket.title || 'Cooked Slip'}" in the Live Verification Arena.\nEnter stake in GHS (₵):`, defaultStake);
     if (input === null) return;
     const stakeGHS = Math.max(1, Number(input) || 100);
     await api('/api/arena/place', {
@@ -2556,7 +2479,7 @@ window.oraclePlaceInArena = async (ticket) => {
 };
 
 window.oracleUpdateArenaStake = async (arenaId, currentStake) => {
-  const input = prompt('Update virtual stake in GHS (₵) for this ticket:', String(currentStake || 100));
+  const input = prompt('Update stake in GHS (₵) for this ticket:', String(currentStake || 100));
   if (input === null) return;
   const stakeGHS = Math.max(1, Number(input) || 100);
   try {
@@ -2565,7 +2488,7 @@ window.oracleUpdateArenaStake = async (arenaId, currentStake) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ arenaId, stakeGHS }),
     });
-    showToast(`✓ Updated virtual stake to ₵${stakeGHS}`, 'ok');
+    showToast(`✓ Updated stake to ₵${stakeGHS}`, 'ok');
     renderArena(false, true);
   } catch (err) {
     showToast('Failed to update stake: ' + err.message, 'err');
@@ -2575,45 +2498,52 @@ window.oracleUpdateArenaStake = async (arenaId, currentStake) => {
 function renderEquityCurveSvg(eq) {
   const pts = eq?.points || [];
   if (pts.length < 2) return '';
-  const startB = eq.startingBankrollGHS || 2500;
+  const startB = 0;
   const w = 780, h = 185, padX = 46, padY = 24;
-  const allVals = pts.flatMap((p) => [p.flexBankroll, p.singlesBankroll, startB]);
-  const minV = Math.min(...allVals) * 0.96;
-  const maxV = Math.max(...allVals) * 1.04;
+  const allVals = pts.flatMap((p) => [p.flexBankroll ?? 0, p.singlesBankroll ?? 0, 0]);
+  const minRaw = Math.min(...allVals);
+  const maxRaw = Math.max(...allVals);
+  const padVal = Math.max((maxRaw - minRaw) * 0.12, 25);
+  const minV = minRaw - padVal;
+  const maxV = maxRaw + padVal;
   const spanV = Math.max(maxV - minV, 50);
 
   const sx = (i) => padX + (i / Math.max(pts.length - 1, 1)) * (w - padX * 2);
   const sy = (v) => h - padY - ((v - minV) / spanV) * (h - padY * 2);
+  const fmtSigned = (n) => `${n >= 0 ? '+' : '-'}₵${Math.abs(Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  const flexPoly = pts.map((p, i) => `${sx(i).toFixed(1)},${sy(p.flexBankroll).toFixed(1)}`).join(' ');
-  const singPoly = pts.map((p, i) => `${sx(i).toFixed(1)},${sy(p.singlesBankroll).toFixed(1)}`).join(' ');
+  const flexPoly = pts.map((p, i) => `${sx(i).toFixed(1)},${sy(p.flexBankroll ?? 0).toFixed(1)}`).join(' ');
+  const singPoly = pts.map((p, i) => `${sx(i).toFixed(1)},${sy(p.singlesBankroll ?? 0).toFixed(1)}`).join(' ');
   const baseY = sy(startB).toFixed(1);
 
   const flexDots = pts.map((p, i) => {
-    const tip = `${p.label}${p.date ? ` (${p.date})` : ''} → Flex Bankroll: ₵${p.flexBankroll.toLocaleString()} | Singles: ₵${p.singlesBankroll.toLocaleString()}`;
-    return `<circle cx="${sx(i).toFixed(1)}" cy="${sy(p.flexBankroll).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3}" fill="var(--good)"><title>${esc(tip)}</title></circle>`;
+    const tip = `${p.label}${p.date ? ` (${p.date})` : ''} → Flex Net P&L: ${fmtSigned(p.flexBankroll)} | Singles Net P&L: ${fmtSigned(p.singlesBankroll)}`;
+    return `<circle cx="${sx(i).toFixed(1)}" cy="${sy(p.flexBankroll ?? 0).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3}" fill="var(--good)"><title>${esc(tip)}</title></circle>`;
   }).join('');
+
+  const curFlex = Number(eq.currentFlexBankrollGHS) || 0;
+  const curSing = Number(eq.currentSinglesBankrollGHS) || 0;
 
   return `
     <section class="panel" style="margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem">
         <div>
-          <h3 style="margin:0">📈 Verified Bankroll Equity Curve (Starting Bankroll: ₵${startB.toLocaleString()})</h3>
-          <span class="small muted">Chronological real-world settlement curve across ${pts.length - 1} settled slips — comparing SportyBet Flex (Cut-1/Cut-2) vs Flat-Singles staking.</span>
+          <h3 style="margin:0">📈 Real Settled Cumulative Net P&amp;L Curve (₵0.00 Baseline)</h3>
+          <span class="small muted">Chronological real-world settlement curve across ${pts.length - 1} completed SportyBet slips — comparing SportyBet Flex (Cut-1/Cut-2) vs Flat-Singles staking.</span>
         </div>
         <div style="display:flex;gap:1rem;font-size:.82rem;font-weight:700">
-          <span style="color:var(--good)">● SportyBet Flex: ₵${(eq.currentFlexBankrollGHS || startB).toLocaleString()}</span>
-          <span style="color:var(--brand)">● Flat Singles: ₵${(eq.currentSinglesBankrollGHS || startB).toLocaleString()}</span>
+          <span style="color:var(--good)">● SportyBet Flex Net: ${fmtSigned(curFlex)}</span>
+          <span style="color:var(--brand)">● Flat Singles Net: ${fmtSigned(curSing)}</span>
         </div>
       </div>
       <div class="equity-chart-wrap">
-        <svg viewBox="0 0 ${w} ${h}" class="equity-svg" role="img" aria-label="Bankroll equity curve">
+        <svg viewBox="0 0 ${w} ${h}" class="equity-svg" role="img" aria-label="Cumulative settled net P&L curve">
           <line x1="${padX}" y1="${baseY}" x2="${w - padX}" y2="${baseY}" stroke="var(--line)" stroke-dasharray="4,4" />
-          <text x="${padX + 4}" y="${Math.max(14, Number(baseY) - 5)}" font-size="10" fill="var(--muted)">Start ₵${startB.toLocaleString()}</text>
+          <text x="${padX + 4}" y="${Math.max(14, Number(baseY) - 5)}" font-size="10" fill="var(--muted)">₵0.00 Break-Even</text>
           <polyline points="${singPoly}" fill="none" stroke="var(--brand)" stroke-width="2.2" stroke-opacity="0.85" />
           <polyline points="${flexPoly}" fill="none" stroke="var(--good)" stroke-width="3" />
           ${flexDots}
-          <text x="${padX}" y="${h - 6}" font-size="10" fill="var(--muted)">Slip #0 (Start)</text>
+          <text x="${padX}" y="${h - 6}" font-size="10" fill="var(--muted)">Slip #0 (₵0.00)</text>
           <text x="${w - padX}" y="${h - 6}" font-size="10" fill="var(--muted)" text-anchor="end">Latest Settled (#${pts.length - 1})</text>
         </svg>
       </div>
@@ -2626,6 +2556,7 @@ function renderArenaLegBadge(settlement) {
   if (st === 'WON_EARLY') return `<span class="tag ok" style="font-weight:700;background:rgba(16,185,129,.22)">⚡ WON EARLY</span>`;
   if (st === 'LOST') return `<span class="tag miss" style="font-weight:700">❌ LOST</span>`;
   if (st === 'VOID') return `<span class="tag" style="font-weight:700">⚪ VOID/PUSH</span>`;
+  if (st === 'UNVERIFIED') return `<span class="tag muted" style="font-weight:700">⚪ UNVERIFIED FEED</span>`;
   if (st === 'WINNING_LIVE') return `<span class="tag ok" style="border:1px solid var(--good)">🟢 WINNING LIVE</span>`;
   if (st === 'TRAILING_LIVE') return `<span class="tag" style="color:var(--warn);border:1px solid var(--warn)">🟡 IN-PLAY</span>`;
   return `<span class="tag muted">⏳ UPCOMING</span>`;
@@ -2638,6 +2569,7 @@ function renderArenaTicketStatusBadge(status, flexHits, flexStatus) {
   if (flexStatus === 'WON_FLEX_CUT3') return `<span class="tag ok" style="font-size:.82rem;font-weight:800;background:rgba(16,185,129,.15)">🎯 FLEX CUT-3 WON (${flexHits.wonLegs}/${flexHits.totalLegs} HIT!)</span>`;
   if (status === 'IN_PLAY') return `<span class="tag" style="background:rgba(239,68,68,.16);color:#ef4444;font-weight:800">🔴 LIVE IN-PLAY (${flexHits.wonLegs} Won · ${flexHits.liveWinningLegs + flexHits.liveTrailingLegs} Live)</span>`;
   if (status === 'PARTIAL_SETTLED') return `<span class="tag pick" style="font-weight:700">⚡ ${flexHits.wonLegs}/${flexHits.decidedLegs} Settled (${flexHits.pendingLegs} Pending)</span>`;
+  if (status === 'INCOMPLETE') return `<span class="tag muted" style="font-weight:700">⚪ ${flexHits.wonLegs}/${flexHits.totalLegs} Verified (${flexHits.unverifiedLegs || 0} Feed Unavailable)</span>`;
   if (status === 'LOST') return `<span class="tag miss" style="font-weight:700">📊 SETTLED: ${flexHits.wonLegs}/${flexHits.totalLegs} HIT (${flexHits.hitRatePct ?? 0}%)</span>`;
   return `<span class="tag">⏳ PLACED &amp; WAITING (${flexHits.totalLegs} Folds)</span>`;
 }
@@ -2659,7 +2591,7 @@ function ensureArenaAutoTimer() {
 async function renderArena(forceSync = false, silent = false) {
   const main = $('#main');
   if (!silent) {
-    main.innerHTML = `<p class="loading"><span class="spinner"></span> Syncing all cooked tickets &amp; odds against real-world live/final scores from SportyBet Ghana &amp; ESPN Global…</p>`;
+    main.innerHTML = `<p class="loading"><span class="spinner"></span> Syncing all pre-booked SportyBet Ghana slips against real-world live &amp; final scores from SportyBet, Sportradar &amp; ESPN…</p>`;
   }
   ensureArenaAutoTimer();
 
@@ -2678,7 +2610,7 @@ async function renderArena(forceSync = false, silent = false) {
 
     const filteredTickets = tickets.filter((t) => {
       if (filter === 'live' && !(t.status === 'IN_PLAY' || (t.flexHits?.liveWinningLegs + t.flexHits?.liveTrailingLegs) > 0)) return false;
-      if (filter === 'settled' && !(t.status === 'WON' || t.status === 'LOST' || t.source === 'verified_backtest' || (t.flexHits?.decidedLegs || 0) > 0)) return false;
+      if (filter === 'settled' && !(t.status === 'WON' || t.status === 'LOST' || (t.flexHits?.decidedLegs || 0) > 0)) return false;
       if (filter === 'upcoming' && t.status !== 'PENDING') return false;
       if (q) {
         const hay = `${t.title} ${t.shareCode || ''} ${(t.legs || []).map((l) => `${l.matchup} ${l.leagueName} ${l.pickLabel || l.sportyPick}`).join(' ')}`.toLowerCase();
@@ -2722,11 +2654,9 @@ async function renderArena(forceSync = false, silent = false) {
           </div>`;
       }).join('');
 
-      const sourceTag = t.source === 'verified_backtest'
-        ? `<span class="tag ok">✓ Real Completed Matches Audit</span>`
-        : t.source === 'live_inplay'
-          ? `<span class="tag" style="color:#ef4444">🔴 Live In-Play Cook</span>`
-          : `<span class="tag pick">🇬🇭 Live SportyBet GH Slip</span>`;
+      const sourceTag = t.source === 'user_placed'
+        ? `<span class="tag ok">👤 User Booked Slip</span>`
+        : `<span class="tag pick">🇬🇭 Pre-Booked SportyBet GH Slip</span>`;
 
       const isFlexWin = t.flexStatus === 'WON_FULL' || t.flexStatus === 'WON_FLEX_CUT1' || t.flexStatus === 'WON_FLEX_CUT2' || t.flexStatus === 'WON_FLEX_CUT3';
 
@@ -2742,14 +2672,14 @@ async function renderArena(forceSync = false, silent = false) {
               <p class="ticket-desc">${esc(t.description || '')}</p>
             </div>
             <div style="text-align:right">
-              <div class="small muted">Virtual Stake</div>
+              <div class="small muted">Stake (₵)</div>
               <button type="button" class="btn" style="padding:.22rem .55rem;font-weight:700" onclick="window.oracleUpdateArenaStake('${esc(t.arenaId)}', ${t.stakeGHS || 100})">
                 ₵${(t.stakeGHS || 100).toLocaleString()} ✎
               </button>
             </div>
           </div>
 
-          ${t.shareCode && !t.shareCode.startsWith('VR') ? renderSportyCodeBanner(t.shareCode, t.shareURL, t.count, t.totalSportyOdds) : ''}
+          ${t.shareCode ? renderSportyCodeBanner(t.shareCode, t.shareURL, t.count, t.totalSportyOdds) : ''}
           ${t.flexDirective ? renderFlexDirectiveBanner(t.flexDirective, t.legs) : ''}
 
           <div class="ticket-stats" style="grid-template-columns:repeat(4,1fr)">
@@ -2808,7 +2738,7 @@ async function renderArena(forceSync = false, silent = false) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1.1rem">
         <div>
           <h2 style="margin:0">🧪 Cooked Odds &amp; Ticket Verification Arena</h2>
-          <p class="muted" style="margin:.25rem 0">Every ticket, Rollover Banker, Correct Score Vault bundle, and custom slip we cook is automatically placed here, graded in real time against live &amp; final results from <b>SportyBet Ghana</b> and <b>ESPN Global Scoreboards</b>, and fed back into the AI Cooker.</p>
+          <p class="muted" style="margin:.25rem 0">Every genuine pre-kickoff SportyBet Ghana ticket, Rollover Banker, Correct Score Vault bundle, and user-booked slip is placed here, graded in real time against live &amp; final results from <b>SportyBet Ghana, Sportradar &amp; ESPN</b>, and fed back into the AI Cooker.</p>
         </div>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
           <span class="small muted">Last synced: ${data.lastSyncedAt ? new Date(data.lastSyncedAt).toLocaleTimeString() : 'just now'}</span>
@@ -2823,11 +2753,11 @@ async function renderArena(forceSync = false, silent = false) {
         <div class="panel" style="margin:0;border-left:4px solid var(--good)">
           <div class="small muted">Standard Cooked Legs Hit Rate</div>
           <div style="font-size:1.75rem;font-weight:900;color:var(--good);margin:.2rem 0">${S.standardLegHitRate != null ? `${S.standardLegHitRate}%` : '–'}</div>
-          <div class="small muted"><b>${S.stdWon || 0}/${S.stdDecided || 0}</b> non-CS legs won · All legs: <b>${S.overallLegHitRate ?? 0}%</b> (${S.legsWon}/${S.legsWon + S.legsLost})</div>
+          <div class="small muted"><b>${S.stdWon || 0}/${S.stdDecided || 0}</b> non-CS legs won · All legs: <b>${S.overallLegHitRate ?? '–'}${S.overallLegHitRate != null ? '%' : ''}</b> (${S.legsWon || 0}/${(S.legsWon || 0) + (S.legsLost || 0)})</div>
         </div>
 
         <div class="panel" style="margin:0;border-left:4px solid var(--brand)">
-          <div class="small muted">Cooked Tickets Placed</div>
+          <div class="small muted">Real SportyBet Slips Tracked</div>
           <div style="font-size:1.75rem;font-weight:900;margin:.2rem 0">${S.totalTickets || 0} <span style="font-size:.95rem;color:var(--good)">(${S.flexTicketsWon || 0}/${S.ticketsSettled || 0} Flex Won)</span></div>
           <div class="small muted">🔴 <b>${S.ticketsInPlay || 0}</b> Live In-Play · ⏳ <b>${S.ticketsPending || 0}</b> Upcoming</div>
         </div>
@@ -2839,19 +2769,19 @@ async function renderArena(forceSync = false, silent = false) {
         </div>
 
         <div class="panel" style="margin:0;border-left:4px solid ${(S.netProfitFlexGHS || 0) >= 0 ? 'var(--good)' : 'var(--brand)'}">
-          <div class="small muted">SportyBet Flex (Cut-1/Cut-2) P&amp;L</div>
+          <div class="small muted">SportyBet Flex (Cut-1/Cut-2) Net P&amp;L</div>
           <div style="font-size:1.65rem;font-weight:900;color:${(S.netProfitFlexGHS || 0) >= 0 ? 'var(--good)' : 'var(--fg)'};margin:.2rem 0">
             ${(S.netProfitFlexGHS || 0) >= 0 ? '+' : ''}₵${(S.netProfitFlexGHS || 0).toLocaleString()} (${(S.flexRoiPct || 0) >= 0 ? '+' : ''}${S.flexRoiPct || 0}% ROI)
           </div>
-          <div class="small muted">Staked: <b>₵${(S.totalStakedGHS || 0).toLocaleString()}</b> → Flex Return: <b>₵${(S.totalFlexReturnedGHS || 0).toLocaleString()}</b></div>
+          <div class="small muted">Settled Staked: <b>₵${(S.totalStakedGHS || 0).toLocaleString()}</b> → Flex Return: <b>₵${(S.totalFlexReturnedGHS || 0).toLocaleString()}</b></div>
         </div>
 
         <div class="panel" style="margin:0;border-left:4px solid ${S.netProfitSinglesGHS >= 0 ? 'var(--good)' : 'var(--warn)'}">
-          <div class="small muted">Flat-Singles P&amp;L (Settled)</div>
+          <div class="small muted">Flat-Singles Net P&amp;L (Settled)</div>
           <div style="font-size:1.65rem;font-weight:900;color:${S.netProfitSinglesGHS >= 0 ? 'var(--good)' : 'var(--bad)'};margin:.2rem 0">
             ${S.netProfitSinglesGHS >= 0 ? '+' : ''}₵${(S.netProfitSinglesGHS || 0).toLocaleString()} (${S.singlesRoiPct >= 0 ? '+' : ''}${S.singlesRoiPct}%)
           </div>
-          <div class="small muted">Staked: <b>₵${(S.totalStakedGHS || 0).toLocaleString()}</b> → Returned: <b>₵${(S.totalSinglesReturnedGHS || 0).toLocaleString()}</b></div>
+          <div class="small muted">Settled Staked: <b>₵${(S.totalStakedGHS || 0).toLocaleString()}</b> → Returned: <b>₵${(S.totalSinglesReturnedGHS || 0).toLocaleString()}</b></div>
         </div>
       </div>
 
@@ -2915,7 +2845,7 @@ async function renderArena(forceSync = false, silent = false) {
         <div class="mkt-tabs" style="margin-bottom:0">
           ${[
             ['all', `🎫 All Placed Tickets (${tickets.length})`],
-            ['settled', `✅ Settled & Verified Slips (${tickets.filter((t) => t.status === 'WON' || t.status === 'LOST' || t.source === 'verified_backtest' || (t.flexHits?.decidedLegs || 0) > 0).length})`],
+            ['settled', `✅ Settled & Verified Slips (${tickets.filter((t) => t.status === 'WON' || t.status === 'LOST' || (t.flexHits?.decidedLegs || 0) > 0).length})`],
             ['live', `🔴 Live In-Play (${tickets.filter((t) => t.status === 'IN_PLAY' || (t.flexHits?.liveWinningLegs + t.flexHits?.liveTrailingLegs) > 0).length})`],
             ['upcoming', `⏳ Upcoming Slips (${tickets.filter((t) => t.status === 'PENDING').length})`],
             ['ledger', `📋 Individual Legs Ledger (${allLegs.length})`],

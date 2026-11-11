@@ -28,6 +28,41 @@ let dirty = false;
 let lastSyncTs = 0;
 let saveChain = Promise.resolve();
 
+function sanitizeArenaDb(data) {
+  if (!data || typeof data !== 'object' || !data.tickets) return false;
+  let mutated = false;
+  for (const [k, t] of Object.entries(data.tickets)) {
+    const src = t?.source || '';
+    const code = String(t?.shareCode || '');
+    const placed = String(t?.placedAt || '');
+    // Purge retroactive backtests, live-inplay test slips, fake VR* codes, and old seeded October demo tickets
+    if (
+      src === 'verified_backtest' ||
+      src === 'live_inplay' ||
+      k.startsWith('arena-audit-') ||
+      k.startsWith('arena-live-inplay-') ||
+      code.startsWith('VR') ||
+      (placed && placed < '2026-11-10')
+    ) {
+      delete data.tickets[k];
+      mutated = true;
+      continue;
+    }
+    for (const leg of t.legs || []) {
+      const rsn = String(leg.settlement?.reason || '');
+      if (leg.settlement?.state === 'VOID' && /unavailable|expired|archived/i.test(rsn)) {
+        leg.settlement.state = 'UNVERIFIED';
+        mutated = true;
+      }
+    }
+  }
+  if (data.bankroll) {
+    delete data.bankroll;
+    mutated = true;
+  }
+  return mutated;
+}
+
 async function load() {
   if (db) return db;
   try {
@@ -40,11 +75,13 @@ async function load() {
     }
     if (!db || typeof db !== 'object') throw new Error('Invalid arena JSON');
     if (!db.tickets) db.tickets = {};
-    if (!db.bankroll) db.bankroll = { startingGHS: 2500 };
+    if (sanitizeArenaDb(db)) {
+      dirty = true;
+      save();
+    }
   } catch {
     db = {
       tickets: {},
-      bankroll: { startingGHS: 2500 },
       lastSyncedAt: null,
     };
   }
@@ -418,7 +455,7 @@ export function gradeLegAgainstMatch(leg, match) {
   if (isFinal) {
     const kickMs = leg.date ? new Date(leg.date).getTime() : 0;
     if (kickMs && Date.now() - kickMs > 18 * 3600 * 1000) {
-      return res('VOID', 'FT Score recorded · granular prop stat feed unavailable (Push)');
+      return res('UNVERIFIED', 'FT Score recorded · official stat feed unavailable');
     }
     return res('PENDING', 'FT Score recorded · awaiting official BetRadar stat feed');
   }
@@ -431,6 +468,7 @@ function summarizeTicketSettlement(ticket) {
   let wonLegs = 0;
   let lostLegs = 0;
   let voidLegs = 0;
+  let unverifiedLegs = 0;
   let liveWinningLegs = 0;
   let liveTrailingLegs = 0;
   let pendingLegs = 0;
@@ -440,6 +478,7 @@ function summarizeTicketSettlement(ticket) {
     if (st === 'WON' || st === 'WON_EARLY') wonLegs++;
     else if (st === 'LOST') lostLegs++;
     else if (st === 'VOID') voidLegs++;
+    else if (st === 'UNVERIFIED') unverifiedLegs++;
     else if (st === 'WINNING_LIVE') liveWinningLegs++;
     else if (st === 'TRAILING_LIVE') liveTrailingLegs++;
     else pendingLegs++;
@@ -450,14 +489,16 @@ function summarizeTicketSettlement(ticket) {
   const hitRatePct = decidedLegs > 0 ? +((wonLegs / decidedLegs) * 100).toFixed(1) : null;
 
   let status = 'PENDING';
-  if (totalLegs > 0 && wonLegs + voidLegs === totalLegs && wonLegs > 0) {
+  if (totalLegs > 0 && unverifiedLegs === 0 && wonLegs + voidLegs === totalLegs && wonLegs > 0) {
     status = 'WON';
-  } else if (totalLegs > 0 && voidLegs === totalLegs) {
+  } else if (totalLegs > 0 && unverifiedLegs === 0 && voidLegs === totalLegs) {
     status = 'VOID';
   } else if (liveWinningLegs > 0 || liveTrailingLegs > 0) {
     status = 'IN_PLAY';
   } else if (lostLegs > 0 && pendingLegs === 0 && liveWinningLegs === 0 && liveTrailingLegs === 0) {
     status = 'LOST';
+  } else if (unverifiedLegs > 0 && pendingLegs === 0 && liveWinningLegs === 0 && liveTrailingLegs === 0) {
+    status = 'INCOMPLETE';
   } else if (decidedLegs > 0) {
     status = 'PARTIAL_SETTLED';
   }
@@ -479,10 +520,10 @@ function summarizeTicketSettlement(ticket) {
     accaPayoutGHS = stakeGHS;
   }
 
-  // 2. SportyBet Ghana Flex (Cut-1 / Cut-2 / Cut-3) Payout
+  // 2. SportyBet Ghana Flex (Cut-1 / Cut-2 / Cut-3) Payout (only when all legs were genuinely verified!)
   let flexPayoutGHS = accaPayoutGHS;
   let flexStatus = status === 'WON' ? 'WON_FULL' : status === 'VOID' ? 'VOID' : null;
-  if (status === 'LOST' && wonLegs > 0) {
+  if (status === 'LOST' && unverifiedLegs === 0 && wonLegs > 0) {
     if (lostLegs === 1 && totalLegs >= 5) {
       const cut1Factor = Math.max(2.2, totalLegs * 0.92);
       flexPayoutGHS = +(stakeGHS * (wonOddsProduct / cut1Factor)).toFixed(2);
@@ -514,7 +555,7 @@ function summarizeTicketSettlement(ticket) {
   // 4. Live Cashout & Hedge-Lock Advisor
   let hedgeAdvice = null;
   const remainingLegs = legs.filter((l) => ['PENDING', 'WINNING_LIVE', 'TRAILING_LIVE'].includes(l.settlement?.state));
-  if (lostLegs === 0 && wonLegs >= 2 && remainingLegs.length >= 1 && remainingLegs.length <= 2) {
+  if (lostLegs === 0 && unverifiedLegs === 0 && wonLegs >= 2 && remainingLegs.length >= 1 && remainingLegs.length <= 2) {
     const cashoutOfferGHS = +(stakeGHS * wonOddsProduct * 0.82).toFixed(2);
     const lastLeg = remainingLegs[0];
     const oppOdds = +(1 / Math.max(0.08, 1 - (Number(lastLeg.p) || 0.65)) * 0.92).toFixed(2);
@@ -544,6 +585,7 @@ function summarizeTicketSettlement(ticket) {
     wonLegs,
     lostLegs,
     voidLegs,
+    unverifiedLegs,
     liveWinningLegs,
     liveTrailingLegs,
     pendingLegs,
@@ -682,8 +724,8 @@ async function fetchRealWorldResultsMap(trackedLegs) {
     allMatches.push(resObj);
   };
 
-  // 1. Fetch SportyBet live matches across Football, Basketball & Tennis
-  await Promise.all(['sr:sport:1', 'sr:sport:2', 'sr:sport:5'].map(async (spId) => {
+  // 1. Fetch SportyBet live matches across all 6 supported SportyBet sports
+  await Promise.all(['sr:sport:1', 'sr:sport:2', 'sr:sport:4', 'sr:sport:5', 'sr:sport:3', 'sr:sport:16'].map(async (spId) => {
     try {
       const r = await fetch(`https://www.sportybet.com/api/gh/factsCenter/liveOrPrematchEvents?sportId=${encodeURIComponent(spId)}`, {
         headers: SPORTY_HEADERS,
@@ -698,22 +740,34 @@ async function fetchRealWorldResultsMap(trackedLegs) {
   // 2. Query specific SportyBet eventIds & collect historical dates for unsettled legs whose start time has arrived
   const now = Date.now();
   const eventIdsToQuery = new Set();
+  const srTeamUidsToQuery = new Set();
   const dateSet = new Set([
     new Date().toISOString().slice(0, 10).replaceAll('-', ''),
     new Date(now - 86400e3).toISOString().slice(0, 10).replaceAll('-', ''),
   ]);
 
+  const cleanUid = (raw) => {
+    if (!raw) return null;
+    const m = String(raw).match(/(\d+)$/);
+    return m ? m[1] : null;
+  };
+
   for (const leg of trackedLegs) {
     const st = leg.settlement?.state;
     if (st === 'WON' || st === 'LOST' || st === 'VOID') continue;
     const kickMs = leg.date ? new Date(leg.date).getTime() : 0;
-    if (kickMs && kickMs <= now + 20 * 60 * 1000) {
+    if (kickMs && kickMs > now + 20 * 60 * 1000) continue;
+    if (kickMs) {
       const dStr = new Date(kickMs).toISOString().slice(0, 10).replaceAll('-', '');
       dateSet.add(dStr);
     }
     if (leg.eventId && String(leg.eventId).startsWith('sr:match:')) {
-      if (!kickMs || kickMs <= now + 15 * 60 * 1000 || byEventId.has(leg.eventId)) {
-        eventIdsToQuery.add(leg.eventId);
+      eventIdsToQuery.add(leg.eventId);
+      if (kickMs && now - kickMs > 95 * 60 * 1000) {
+        const hUid = cleanUid(leg.homeTeamId);
+        const aUid = cleanUid(leg.awayTeamId);
+        if (hUid) srTeamUidsToQuery.add(hUid);
+        else if (aUid) srTeamUidsToQuery.add(aUid);
       }
     }
   }
@@ -732,34 +786,96 @@ async function fetchRealWorldResultsMap(trackedLegs) {
     }));
   }
 
-  // 3. Fetch ESPN Global Soccer Scoreboards across all needed dates (up to 12 dates, covering multi-week gaps!)
-  const datesToFetch = [...dateSet].sort().reverse().slice(0, 12);
-  await Promise.all(datesToFetch.map(async (dayStr) => {
-    try {
-      const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=250&dates=${dayStr}`, {
-        signal: AbortSignal.timeout(9000),
-      }).then((x) => x.json());
-      for (const ev of r.events || []) {
-        const parsed = parseEspnEventToMatchResult(ev);
-        if (!parsed) continue;
-        byEventId.set(`espn:${ev.id}`, parsed);
-        allMatches.push(parsed);
-        const pairKey = `${normTeam(parsed.home)}|${normTeam(parsed.away)}`;
-        const existing = byTeamPair.get(pairKey);
-        if (existing) {
-          existing.stats = { ...existing.stats, ...parsed.stats };
-          existing.maxHomeLead = Math.max(existing.maxHomeLead ?? 0, parsed.maxHomeLead ?? 0);
-          existing.maxAwayLead = Math.max(existing.maxAwayLead ?? 0, parsed.maxAwayLead ?? 0);
-          if (existing.htHome === null && parsed.htHome !== null) {
-            existing.htHome = parsed.htHome;
-            existing.htAway = parsed.htAway;
+  // 2b. Query official Sportradar Gismo completed-match history for finished sr:match legs no longer in live factsCenter
+  const uidList = [...srTeamUidsToQuery].slice(0, 24);
+  if (uidList.length > 0) {
+    await Promise.all(uidList.map(async (uid) => {
+      try {
+        const r = await fetch(`https://stats.fn.sportradar.com/sportybet/en/Etc:UTC/gismo/stats_team_lastx/${uid}/5`, {
+          headers: { 'User-Agent': SPORTY_HEADERS['User-Agent'], Accept: 'application/json' },
+          signal: AbortSignal.timeout(6000),
+        }).then((x) => x.json());
+        const matches = r?.doc?.[0]?.data?.matches || [];
+        for (const m of matches) {
+          const statusId = Number(m?.status?._id ?? 0);
+          if (statusId < 100 && m?.result?.home == null) continue;
+          const homeScore = Number(m?.result?.home);
+          const awayScore = Number(m?.result?.away);
+          if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) continue;
+          const p1h = Number(m?.periods?.p1?.home);
+          const p1a = Number(m?.periods?.p1?.away);
+          const htHome = Number.isFinite(p1h) ? p1h : null;
+          const htAway = Number.isFinite(p1a) ? p1a : null;
+          const evId = `sr:match:${m._id}`;
+          const homeName = m?.teams?.home?.name || '';
+          const awayName = m?.teams?.away?.name || '';
+          if (!homeName || !awayName) continue;
+          const obj = {
+            eventId: evId,
+            home: homeName,
+            away: awayName,
+            date: m?.time?.uts ? new Date(m.time.uts * 1000).toISOString() : null,
+            state: 'post',
+            matchStatus: 'FT',
+            clock: null,
+            homeScore,
+            awayScore,
+            htHome,
+            htAway,
+            maxHomeLead: Math.max(0, homeScore - awayScore, htHome !== null && htAway !== null ? htHome - htAway : 0),
+            maxAwayLead: Math.max(0, awayScore - homeScore, htHome !== null && htAway !== null ? htAway - htHome : 0),
+            stats: {},
+          };
+          if (!byEventId.has(evId) || byEventId.get(evId).state !== 'post') {
+            byEventId.set(evId, obj);
+            allMatches.push(obj);
+            const pk = `${normTeam(homeName)}|${normTeam(awayName)}`;
+            if (!byTeamPair.has(pk)) byTeamPair.set(pk, obj);
           }
-        } else {
-          byTeamPair.set(pairKey, parsed);
         }
-      }
-    } catch { /* ignore */ }
-  }));
+      } catch { /* ignore */ }
+    }));
+  }
+
+  // 3. Fetch ESPN Global Scoreboards across Soccer + NBA + NCAAB + NHL + NFL for recent dates
+  const datesToFetch = [...dateSet].sort().reverse().slice(0, 8);
+  const espnEndpoints = [
+    ...datesToFetch.map((d) => `https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=250&dates=${d}`),
+    ...datesToFetch.slice(0, 4).flatMap((d) => [
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=100&dates=${d}`,
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=150&dates=${d}`,
+      `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?limit=100&dates=${d}`,
+      `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?limit=100&dates=${d}`,
+    ]),
+  ];
+
+  for (let i = 0; i < espnEndpoints.length; i += 10) {
+    const batch = espnEndpoints.slice(i, i + 10);
+    await Promise.all(batch.map(async (url) => {
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(8500) }).then((x) => x.json());
+        for (const ev of r.events || []) {
+          const parsed = parseEspnEventToMatchResult(ev);
+          if (!parsed) continue;
+          byEventId.set(`espn:${ev.id}`, parsed);
+          allMatches.push(parsed);
+          const pairKey = `${normTeam(parsed.home)}|${normTeam(parsed.away)}`;
+          const existing = byTeamPair.get(pairKey);
+          if (existing) {
+            existing.stats = { ...existing.stats, ...parsed.stats };
+            existing.maxHomeLead = Math.max(existing.maxHomeLead ?? 0, parsed.maxHomeLead ?? 0);
+            existing.maxAwayLead = Math.max(existing.maxAwayLead ?? 0, parsed.maxAwayLead ?? 0);
+            if (existing.htHome === null && parsed.htHome !== null) {
+              existing.htHome = parsed.htHome;
+              existing.htAway = parsed.htAway;
+            }
+          } else {
+            byTeamPair.set(pairKey, parsed);
+          }
+        }
+      } catch { /* ignore */ }
+    }));
+  }
 
   return { byEventId, byTeamPair, allMatches };
 }
@@ -870,321 +986,6 @@ export function parseEspnEventToMatchResult(ev) {
   };
 }
 
-/**
- * Cook a Live In-Play Test Slip from games happening right now on SportyBet Ghana
- * so the user can watch live minute-by-minute grading in real time.
- */
-async function ensureLiveInPlayCookedSlip() {
-  await load();
-  try {
-    // Prune older live_inplay test slips (keep at most the 2 newest) so unattended servers never bloat arena.json
-    const liveKeys = Object.entries(db.tickets)
-      .filter(([, t]) => t.source === 'live_inplay')
-      .sort((a, b) => new Date(b[1].placedAt || 0) - new Date(a[1].placedAt || 0));
-    if (liveKeys.length > 2) {
-      for (const [k] of liveKeys.slice(2)) delete db.tickets[k];
-      dirty = true;
-    }
-
-    const dayBucket = new Date().toISOString().slice(0, 10);
-    if (db.tickets[`arena-live-inplay-${dayBucket}`]) return;
-
-    const r = await fetch('https://www.sportybet.com/api/gh/factsCenter/liveOrPrematchEvents?sportId=sr:sport:1', {
-      headers: SPORTY_HEADERS,
-      signal: AbortSignal.timeout(7000),
-    }).then((x) => x.json());
-
-    const liveEvents = (r.data || []).flatMap((t) => (t.events || []).map((ev) => ({
-      ...ev,
-      leagueName: `${t.categoryName || ''} · ${t.name || ''}`.replace(/^ · /, ''),
-    }))).filter((ev) => {
-      // Strictly pick 1st Half / HT / early 2nd Half (<= 58') so we never bet Over in the 85th minute
-      const mins = parseInt(String(ev.playedSeconds || '').split(':')[0], 10);
-      if (Number.isFinite(mins) && mins > 58) return false;
-      const st = String(ev.matchStatus || '').toLowerCase();
-      if (st.includes('ended') || st.includes('ft') || st.includes('ap') || st.includes('aet')) return false;
-      return true;
-    });
-    if (liveEvents.length < 2) return;
-
-    const legs = [];
-    for (const ev of liveEvents.slice(0, 5)) {
-      const ft = parseScoreStr(ev.setScore) || parseScoreStr(ev.gameScore?.[0]) || { home: 0, away: 0 };
-      const total = ft.home + ft.away;
-      if (total >= 3) continue;
-      const mktKey = total === 0 ? 'ou0.5' : total === 1 ? 'ou1.5' : 'ou2.5';
-      const line = total + 0.5;
-      const odds = +(1.30 + Math.min(0.55, total * 0.14)).toFixed(2);
-      const p = +(1 / odds - 0.02).toFixed(3);
-
-      legs.push({
-        eventId: ev.eventId,
-        sportyGameId: ev.gameId,
-        leagueId: 'live.soccer',
-        leagueName: ev.leagueName || 'Live Football',
-        matchup: `${ev.homeTeamName} vs ${ev.awayTeamName}`,
-        home: ev.homeTeamName,
-        away: ev.awayTeamName,
-        date: new Date(ev.estimateStartTime || Date.now()).toISOString(),
-        group: 'Goals',
-        marketKey: mktKey,
-        marketName: `Over/Under ${line} Goals`,
-        selKey: 'over',
-        pickLabel: `Over ${line} Goals`,
-        p,
-        fairOdds: +(1 / p).toFixed(2),
-        sportyOdds: odds,
-        sportyMarket: `SportyBet Live -> Over ${line} Goals @ ${odds}`,
-      });
-    }
-
-    if (legs.length >= 2) {
-      const totalOdds = +legs.reduce((a, b) => a * b.sportyOdds, 1).toFixed(2);
-      const combP = +legs.reduce((a, b) => a * b.p, 1).toFixed(4);
-      await registerTickets([{
-        arenaId: `arena-live-inplay-${dayBucket}`,
-        id: `live-inplay-${dayBucket}`,
-        title: `🔴 Live In-Play Real-Time Test Slip (${legs.length}-Fold)`,
-        category: 'Live In-Play Test',
-        description: 'Cooked on early-minute live matches currently on the pitch and graded minute-by-minute against real-world scores.',
-        source: 'live_inplay',
-        stakeGHS: 50,
-        totalSportyOdds: totalOdds,
-        combinedProb: combP,
-        combinedFairOdds: +(1 / Math.max(combP, 1e-6)).toFixed(2),
-        legs,
-      }], { source: 'live_inplay' });
-    }
-  } catch { /* ignore */ }
-}
-
-/**
- * Seed & verify our Cooked-Odds Engine against REAL completed matches from today and yesterday
- * (using strictly pre-match team records W-D-L to estimate pre-game lambdas, cooking the exact
- * same Vhim, 20-Fold, Mixed Multi, 1UP, Corners/Cards, Multiscore, and Correct Score tickets,
- * and then grading them against the real-world final scores & match statistics).
- */
-async function ensureCompletedRealWorldAudit() {
-  await load();
-  const d0 = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-  const d1 = new Date(Date.now() - 86400e3).toISOString().slice(0, 10).replaceAll('-', '');
-  const batchKey = d1;
-  const hasTodayBatch = Object.keys(db.tickets).some((k) => k.startsWith(`arena-audit-${batchKey}-`));
-  if (hasTodayBatch) return;
-
-  try {
-    const [r0, r1] = await Promise.all([
-      fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=220&dates=${d0}`, { signal: AbortSignal.timeout(9000) }).then((x) => x.json()).catch(() => ({ events: [] })),
-      fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=220&dates=${d1}`, { signal: AbortSignal.timeout(9000) }).then((x) => x.json()).catch(() => ({ events: [] })),
-    ]);
-
-    const completedEvents = [...(r0.events || []), ...(r1.events || [])]
-      .filter((e) => e.status?.type?.state === 'post');
-
-    const candidateGames = [];
-    for (const ev of completedEvents) {
-      const matchRes = parseEspnEventToMatchResult(ev);
-      if (!matchRes || !Number.isFinite(matchRes.stats?.corners)) continue;
-
-      // Reconstruct EXACT pre-kickoff W-D-L record by subtracting this match's outcome (100% zero outcome leakage!)
-      const parsePreMatchWdl = (recStr, didWin, didDraw, didLose) => {
-        const m = String(recStr || '').match(/(\d+)-(\d+)-(\d+)/);
-        if (!m) return { w: 3, d: 2, l: 3, n: 8, valid: false };
-        const w = Math.max(0, Number(m[1]) - (didWin ? 1 : 0));
-        const d = Math.max(0, Number(m[2]) - (didDraw ? 1 : 0));
-        const l = Math.max(0, Number(m[3]) - (didLose ? 1 : 0));
-        const n = w + d + l;
-        return { w, d, l, n: Math.max(1, n), valid: n >= 1 };
-      };
-      const hWon = matchRes.homeScore > matchRes.awayScore;
-      const aWon = matchRes.awayScore > matchRes.homeScore;
-      const drew = matchRes.homeScore === matchRes.awayScore;
-      const hRec = parsePreMatchWdl(matchRes.homeRecord, hWon, drew, aWon);
-      const aRec = parsePreMatchWdl(matchRes.awayRecord, aWon, drew, hWon);
-      if (!hRec.valid && !aRec.valid) continue;
-
-      const namePrior = (str = '') => {
-        let h = 2166136261;
-        for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619);
-        return ((h >>> 0) % 100) / 500 - 0.10;
-      };
-      const hWinRate = (hRec.w + 1.4) / (hRec.n + 3.0) + namePrior(matchRes.home);
-      const aWinRate = (aRec.w + 1.1) / (aRec.n + 3.0) + namePrior(matchRes.away);
-      const hLossRate = (hRec.l + 1.1) / (hRec.n + 3.0);
-      const aLossRate = (aRec.l + 1.4) / (aRec.n + 3.0);
-
-      const lh = Math.max(0.75, Math.min(2.65, 1.48 * (0.65 + 0.78 * hWinRate + 0.45 * aLossRate)));
-      const la = Math.max(0.55, Math.min(2.35, 1.14 * (0.60 + 0.78 * aWinRate + 0.45 * hLossRate)));
-      const intensity = (lh + la) / 2.6;
-
-      const pois = (lam, k) => {
-        let p = Math.exp(-lam);
-        for (let i = 1; i <= k; i++) p *= lam / i;
-        return p;
-      };
-      let pH = 0, pD = 0, pA = 0, pO15 = 0, pO25 = 0, pGG = 0;
-      const csList = [];
-      let pClusterH = 0, pClusterA = 0, pClusterD = 0;
-      for (let i = 0; i <= 6; i++) {
-        const pi = pois(lh, i);
-        for (let j = 0; j <= 6; j++) {
-          const pj = pois(la, j);
-          const p = pi * pj;
-          if (i > j) pH += p;
-          else if (i < j) pA += p;
-          else pD += p;
-          if (i + j >= 2) pO15 += p;
-          if (i + j >= 3) pO25 += p;
-          if (i >= 1 && j >= 1) pGG += p;
-          if (i <= 3 && j <= 3) csList.push({ key: `${i}:${j}`, label: `${i}:${j}`, p });
-          if ((i === 1 && j === 0) || (i === 2 && j === 0) || (i === 3 && j === 0)) pClusterH += p;
-          if ((i === 0 && j === 1) || (i === 0 && j === 2) || (i === 0 && j === 3)) pClusterA += p;
-          if ((i === 1 && j === 1) || (i === 2 && j === 2) || (i === 3 && j === 3)) pClusterD += p;
-        }
-      }
-      csList.sort((x, y) => y.p - x.p);
-      const p1upH = Math.min(0.94, pH + pD * 0.34 + pA * 0.14);
-      const p1upA = Math.min(0.92, pA + pD * 0.32 + pH * 0.12);
-      const pCornersO85 = Math.min(0.88, Math.max(0.45, 0.56 + (intensity - 1) * 0.35));
-      const pCardsO35 = Math.min(0.86, Math.max(0.44, 0.55 + (intensity - 1) * 0.28));
-      const pShotsO225 = Math.min(0.88, Math.max(0.46, 0.58 + (intensity - 1) * 0.38));
-      const pSotO75 = Math.min(0.87, Math.max(0.45, 0.57 + (intensity - 1) * 0.36));
-
-      const markets = [
-        { group: 'Main', key: '1x2', name: '1X2', selections: [{ key: 'home', label: `${matchRes.home} Win`, p: pH }, { key: 'away', label: `${matchRes.away} Win`, p: pA }] },
-        { group: 'Main', key: '1up', name: '1X2 - 1UP', selections: [{ key: 'home', label: `${matchRes.home} (1UP)`, p: p1upH }, { key: 'away', label: `${matchRes.away} (1UP)`, p: p1upA }] },
-        { group: 'Main', key: 'dc', name: 'Double Chance', selections: [{ key: '1x', label: '1X (Home or Draw)', p: pH + pD }, { key: 'x2', label: 'X2 (Draw or Away)', p: pD + pA }] },
-        { group: 'Main', key: 'dnb', name: 'Draw No Bet', selections: [{ key: 'home', label: `${matchRes.home} DNB`, p: pH / Math.max(0.01, pH + pA) }] },
-        { group: 'Goals', key: 'ou1.5', name: 'Over/Under 1.5 Goals', selections: [{ key: 'over', label: 'Over 1.5 Goals', p: pO15 }] },
-        { group: 'Goals', key: 'ou2.5', name: 'Over/Under 2.5 Goals', selections: [{ key: 'over', label: 'Over 2.5 Goals', p: pO25 }] },
-        { group: 'Goals', key: 'ggng', name: 'GG/NG', selections: [{ key: 'gg', label: 'GG (Both Score)', p: pGG }] },
-        { group: 'Corners', key: 'corners8.5', name: 'Total Corners 8.5', selections: [{ key: 'over', label: 'Over 8.5 Corners', p: pCornersO85 }] },
-        { group: 'Cards', key: 'cards3.5', name: 'Total Cards 3.5', selections: [{ key: 'over', label: 'Over 3.5 Cards', p: pCardsO35 }] },
-        { group: 'Shots', key: 'shots22.5', name: 'Total Shots 22.5', selections: [{ key: 'over', label: 'Over 22.5 Shots', p: pShotsO225 }] },
-        { group: 'Shots', key: 'sot7.5', name: 'Total SOT 7.5', selections: [{ key: 'over', label: 'Over 7.5 SOT', p: pSotO75 }] },
-        { group: 'Goals', key: 'multiscore', name: 'Multiscores', selections: [
-          { key: '1:0, 2:0 or 3:0', label: '1:0, 2:0 or 3:0', Sporty: '1:0, 2:0 or 3:0', p: pClusterH },
-          { key: '0:1, 0:2 or 0:3', label: '0:1, 0:2 or 0:3', Sporty: '0:1, 0:2 or 0:3', p: pClusterA },
-          { key: '1:1, 2:2 or 3:3', label: '1:1, 2:2 or 3:3', Sporty: '1:1, 2:2 or 3:3', p: pClusterD },
-        ] },
-        { group: 'Goals', key: 'cs', name: 'Correct Score', selections: csList.slice(0, 2).map((c) => ({ key: c.key, label: `Exact Score ${c.label}`, Sporty: c.label, p: c.p })) },
-      ];
-
-      const sels = [];
-      for (const m of markets) {
-        for (const s of m.selections || []) {
-          if (!Number.isFinite(s.p) || s.p <= 0.04) continue;
-          const sportyOdds = Math.max(1.12, +((1 / s.p) * 0.94).toFixed(2));
-          sels.push({
-            eventId: matchRes.eventId,
-            leagueId: 'global.soccer',
-            leagueName: 'Real-World Completed Match',
-            matchup: `${matchRes.home} vs ${matchRes.away}`,
-            home: matchRes.home,
-            away: matchRes.away,
-            date: matchRes.date || new Date().toISOString(),
-            group: m.group,
-            marketKey: m.key,
-            marketName: m.name,
-            selKey: s.key,
-            pickLabel: s.Sporty || `${m.name}: ${s.label}`,
-            p: +s.p.toFixed(4),
-            fairOdds: +(1 / s.p).toFixed(2),
-            sportyOdds,
-            sportyMarket: `SportyBet -> ${m.name} -> ${s.label} @ ${sportyOdds}`,
-            _matchResult: matchRes,
-          });
-        }
-      }
-
-      if (sels.length) {
-        candidateGames.push({ matchRes, selections: sels });
-      }
-    }
-
-    if (candidateGames.length < 8) return;
-
-    const pickOnePerMatch = (maxLegs, filterFn) => {
-      const out = [];
-      for (const g of candidateGames) {
-        const valid = g.selections.filter(filterFn).sort((a, b) => b.p - a.p);
-        if (valid.length) out.push({ pick: valid[0], score: valid[0].p });
-      }
-      out.sort((a, b) => b.score - a.score);
-      return out.slice(0, maxLegs).map((x) => {
-        const leg = { ...x.pick };
-        const mr = leg._matchResult;
-        delete leg._matchResult;
-        leg.settlement = gradeLegAgainstMatch(leg, mr);
-        return leg;
-      });
-    };
-
-    const labelDate = `${batchKey.slice(0, 4)}-${batchKey.slice(4, 6)}-${batchKey.slice(6, 8)}`;
-    const buildAuditTicket = (id, title, category, description, stakeGHS, legs) => {
-      const totalSportyOdds = +legs.reduce((a, b) => a * b.sportyOdds, 1).toFixed(2);
-      const combP = +legs.reduce((a, b) => a * b.p, 1).toFixed(4);
-      return {
-        arenaId: `arena-audit-${batchKey}-${id}`,
-        id: `audit-${batchKey}-${id}`,
-        title: `${title} (${labelDate})`,
-        category,
-        description,
-        source: 'verified_backtest',
-        placedAt: new Date(Date.now() - 4 * 3600e3).toISOString(),
-        shareCode: `VR${id.slice(0, 4).toUpperCase()}`,
-        stakeGHS,
-        totalSportyOdds,
-        combinedProb: combP,
-        combinedFairOdds: +(1 / Math.max(combP, 1e-6)).toFixed(2),
-        legs,
-      };
-    };
-
-    const rollover2x = pickOnePerMatch(3, (s) => ['1up', 'dc', 'ou1.5'].includes(s.marketKey) && s.sportyOdds >= 1.24 && s.sportyOdds <= 1.52);
-    const vhim5 = pickOnePerMatch(5, (s) => ['1up', 'dc', 'ou1.5', 'dnb'].includes(s.marketKey) && s.sportyOdds >= 1.18 && s.sportyOdds <= 1.50);
-    const over15_15 = pickOnePerMatch(15, (s) => s.marketKey === 'ou1.5' && s.selKey === 'over' && s.sportyOdds >= 1.16);
-    const oneUp10 = pickOnePerMatch(10, (s) => s.marketKey === '1up' && s.selKey !== 'draw' && s.sportyOdds >= 1.20 && s.sportyOdds <= 1.75);
-    const props8 = pickOnePerMatch(8, (s) => ['Corners', 'Cards', 'Shots'].includes(s.group) && s.sportyOdds >= 1.32 && s.sportyOdds <= 1.95);
-    const multi6 = pickOnePerMatch(6, (s) => s.marketKey === 'multiscore');
-    const cs10 = pickOnePerMatch(10, (s) => s.marketKey === 'cs');
-
-    const mixed10 = [];
-    const usedEvents = new Set();
-    const mktCycle = ['1up', 'ou1.5', 'dc', 'corners8.5', 'cards3.5', 'shots22.5', 'ggng', '1x2', 'sot7.5', 'dnb'];
-    for (const mk of mktCycle) {
-      for (const g of candidateGames) {
-        if (usedEvents.has(g.matchRes.eventId)) continue;
-        const found = g.selections.filter((s) => s.marketKey === mk && s.p >= 0.54).sort((a, b) => b.p - a.p)[0];
-        if (found) {
-          usedEvents.add(g.matchRes.eventId);
-          const leg = { ...found };
-          const mr = leg._matchResult;
-          delete leg._matchResult;
-          leg.settlement = gradeLegAgainstMatch(leg, mr);
-          mixed10.push(leg);
-          break;
-        }
-      }
-    }
-
-    const auditTickets = [
-      buildAuditTicket('rollover2x', '💰 [Settled Audit] Daily 2.00x Safe Rollover Banker', 'Rollover Banker', 'Pre-game 3-leg ~2.10x rollover banker graded against completed real-world matches.', 200, rollover2x),
-      buildAuditTicket('vhim5', '🔥 [Settled Audit] Vhim Sure Banker (5-Fold)', 'Vhim Banker', 'Pre-game cooked Vhim 5-Fold tested against completed real-world matches.', 150, vhim5),
-      buildAuditTicket('1up10', '⚡ [Settled Audit] 10-Fold 1UP Early Payout', 'Identical Market', 'Pre-game cooked 1UP picks graded against real-world goal timelines.', 100, oneUp10),
-      buildAuditTicket('mix10', '🔀 [Settled Audit] 10-Fold Mixed Multi Master', 'Mixed Multi', '1X2, 1UP, Over 1.5, Corners, Cards & Shots tested on completed matches.', 100, mixed10),
-      buildAuditTicket('o15', '🔁 [Settled Audit] 15-Fold All Over 1.5 Goals', 'Identical Market', 'Pre-game Over 1.5 Goals accumulator graded against final match scores.', 100, over15_15),
-      buildAuditTicket('props8', '🚩 [Settled Audit] 8-Fold Corners, Cards & Shots', 'Identical Market', 'Statistical prop markets graded against official match corner, card & shot totals.', 100, props8),
-      buildAuditTicket('multi6', '🛡️ [Settled Audit] 6-Fold Multiscore Cluster Shield', 'Correct Score Vault', 'Cluster correct scores ("1:0, 2:0 or 3:0") tested against real final scorelines.', 50, multi6),
-      buildAuditTicket('cs10', '🎯 [Settled Audit] 10-Game Correct Score Vault', 'Correct Score Vault', 'Top 10 pre-game exact score predictions graded against real final scores (Singles + Multi).', 50, cs10),
-    ].filter((t) => t.legs?.length >= 2);
-
-    await registerTickets(auditTickets, { source: 'verified_backtest' });
-  } catch (err) {
-    console.warn('[arena] completed audit seed warning:', err.message);
-  }
-}
-
 function findFuzzyMatchResult(leg, allMatches) {
   if (!leg?.home || !leg?.away || !allMatches?.length) return null;
   const legMs = leg.date ? new Date(leg.date).getTime() : NaN;
@@ -1209,9 +1010,8 @@ function findFuzzyMatchResult(leg, allMatches) {
 
 /**
  * Sync the entire Arena:
- * 1. Auto-register all current Curated Tickets & Correct Score Vault bundles so nothing cooked is ever missed.
- * 2. Ensure a Live In-Play Test Slip and Rolling Daily Completed Real-World Audits are present.
- * 3. Fetch live & historical results from SportyBet Ghana + ESPN Global Scoreboards and re-grade every leg & ticket.
+ * 1. Auto-register all current pre-kickoff Curated Tickets & Correct Score Vault bundles booked on SportyBet Ghana.
+ * 2. Fetch live & completed real-world results from SportyBet Ghana, Sportradar Gismo, and ESPN Scoreboards and grade every leg & ticket.
  */
 export async function syncArena({ force = false } = {}) {
   await load();
@@ -1221,7 +1021,7 @@ export async function syncArena({ force = false } = {}) {
   }
   lastSyncTs = now;
 
-  // 1. Register current cooked tickets & vault bundles
+  // 1. Register current genuine pre-kickoff cooked tickets & vault bundles
   try {
     const [curated, vault] = await Promise.all([
       getCuratedTickets(false, 'all'),
@@ -1235,13 +1035,7 @@ export async function syncArena({ force = false } = {}) {
     console.warn('[arena] auto-register curated tickets warning:', err.message);
   }
 
-  // 2. Ensure live in-play test slip & completed real-world audit
-  await Promise.all([
-    ensureLiveInPlayCookedSlip(),
-    ensureCompletedRealWorldAudit(),
-  ]);
-
-  // 3. Collect all legs across all tickets that need live/final result checking
+  // 2. Collect all legs across all tickets that need live/final result checking
   const allTickets = Object.values(db.tickets);
   const legsToCheck = [];
   for (const t of allTickets) {
@@ -1256,9 +1050,6 @@ export async function syncArena({ force = false } = {}) {
     let changed = false;
     for (const leg of t.legs || []) {
       const curState = leg.settlement?.state;
-      if (t.source === 'verified_backtest' && curState && curState !== 'PENDING') {
-        continue;
-      }
       if (curState === 'WON' || curState === 'LOST' || curState === 'VOID') {
         continue;
       }
@@ -1272,13 +1063,13 @@ export async function syncArena({ force = false } = {}) {
         }
         leg.settlement = nextSettlement;
         changed = true;
-      } else {
-        // If a match kicked off more than 72 hours ago and has no public archived feed, push/void it cleanly
+      } else if (curState !== 'UNVERIFIED') {
+        // If a match kicked off more than 72 hours ago and has no public archived feed, mark UNVERIFIED (never push to a false win)
         const kickMs = leg.date ? new Date(leg.date).getTime() : 0;
         if (kickMs && now - kickMs > 72 * 3600 * 1000) {
           leg.settlement = {
-            state: 'VOID',
-            reason: 'Archived >72h ago · lower-tier result feed expired (Push)',
+            state: 'UNVERIFIED',
+            reason: 'Archived >72h ago · official result feed unavailable',
             score: null,
             htScore: null,
             matchStatus: 'Archived',
@@ -1301,7 +1092,7 @@ export async function syncArena({ force = false } = {}) {
   return getArenaSnapshot();
 }
 
-/** Update the virtual GHS stake for a specific Arena ticket. */
+/** Update the GHS stake for a specific Arena ticket. */
 export async function updateTicketStake(arenaId, stakeGHS) {
   await load();
   const t = db.tickets[arenaId];
@@ -1330,9 +1121,9 @@ export async function getArenaSnapshot() {
   }
 
   const tickets = Object.values(db.tickets).sort((a, b) => {
-    const order = { IN_PLAY: 0, WON: 1, PARTIAL_SETTLED: 2, LOST: 3, PENDING: 4 };
-    const oa = order[a.status] ?? 5;
-    const ob = order[b.status] ?? 5;
+    const order = { IN_PLAY: 0, WON: 1, PARTIAL_SETTLED: 2, LOST: 3, PENDING: 4, INCOMPLETE: 5 };
+    const oa = order[a.status] ?? 6;
+    const ob = order[b.status] ?? 6;
     if (oa !== ob) return oa - ob;
     return new Date(b.placedAt) - new Date(a.placedAt);
   });
@@ -1354,6 +1145,7 @@ export async function getArenaSnapshot() {
   let legsLiveWinning = 0;
   let legsLiveTrailing = 0;
   let legsPending = 0;
+  let legsUnverified = 0;
 
   const byMarketGroup = {};
   for (const l of allLegs) {
@@ -1364,7 +1156,7 @@ export async function getArenaSnapshot() {
         ? 'Correct Score & Multiscores'
         : l.group || 'Main';
 
-    byMarketGroup[grp] ||= { group: grp, won: 0, lost: 0, live: 0, pending: 0, oddsSum: 0, wonOddsSum: 0 };
+    byMarketGroup[grp] ||= { group: grp, won: 0, lost: 0, live: 0, pending: 0, unverified: 0, oddsSum: 0, wonOddsSum: 0 };
     const g = byMarketGroup[grp];
 
     if (st === 'WON' || st === 'WON_EARLY') {
@@ -1382,6 +1174,9 @@ export async function getArenaSnapshot() {
     } else if (st === 'TRAILING_LIVE') {
       legsLiveTrailing++;
       g.live++;
+    } else if (st === 'UNVERIFIED' || st === 'VOID') {
+      legsUnverified++;
+      g.unverified++;
     } else {
       legsPending++;
       g.pending++;
@@ -1446,19 +1241,19 @@ export async function getArenaSnapshot() {
     });
   }
 
-  // Ticket-level P&L strictly on genuinely completed (WON / LOST) tickets so in-progress PARTIAL_SETTLED or VOID pushes never distort P&L
+  // Ticket-level P&L strictly on genuinely completed (WON / LOST) tickets so in-progress PARTIAL_SETTLED or INCOMPLETE never distort P&L
   const settledTickets = tickets.filter((t) => t.status === 'WON' || t.status === 'LOST');
   const totalStakedGHS = +settledTickets.reduce((s, t) => s + (Number(t.stakeGHS) || 100), 0).toFixed(2);
   const totalAccaReturnedGHS = +settledTickets.reduce((s, t) => s + (Number(t.accaPayoutGHS) || 0), 0).toFixed(2);
   const totalFlexReturnedGHS = +settledTickets.reduce((s, t) => s + (Number(t.flexPayoutGHS) || 0), 0).toFixed(2);
   const totalSinglesReturnedGHS = +settledTickets.reduce((s, t) => s + (Number(t.singlesPayoutGHS) || 0), 0).toFixed(2);
 
-  // Build chronological Bankroll Equity Curve starting at GHS 2,500
-  const startBank = db.bankroll?.startingGHS || 2500;
-  let runFlex = startBank;
-  let runSingles = startBank;
+  // Build chronological Cumulative Realized Net P&L Curve starting strictly at ₵0.00 (no simulated starting bankroll)
+  const startBank = 0;
+  let runFlex = 0;
+  let runSingles = 0;
   const chronoSettled = [...settledTickets].sort((a, b) => new Date(a.placedAt) - new Date(b.placedAt));
-  const points = [{ step: 0, label: 'Start', date: '', flexBankroll: startBank, singlesBankroll: startBank }];
+  const points = [{ step: 0, label: '₵0 Baseline', date: '', flexBankroll: 0, singlesBankroll: 0 }];
   chronoSettled.forEach((t, idx) => {
     const stk = Number(t.stakeGHS) || 100;
     runFlex = +(runFlex - stk + (Number(t.flexPayoutGHS) || 0)).toFixed(2);
@@ -1473,7 +1268,7 @@ export async function getArenaSnapshot() {
   });
 
   const equityCurve = {
-    startingBankrollGHS: startBank,
+    startingBankrollGHS: 0,
     currentFlexBankrollGHS: runFlex,
     currentSinglesBankrollGHS: runSingles,
     points,
@@ -1502,6 +1297,7 @@ export async function getArenaSnapshot() {
       flexTicketsWon,
       ticketsInPlay: tickets.filter((t) => t.status === 'IN_PLAY').length,
       ticketsPending: tickets.filter((t) => t.status === 'PENDING').length,
+      ticketsIncomplete: tickets.filter((t) => t.status === 'INCOMPLETE').length,
       ticketsSettled: settledTickets.length,
       totalUniqueLegs: allLegs.length,
       legsWon,
@@ -1510,6 +1306,7 @@ export async function getArenaSnapshot() {
       legsLiveWinning,
       legsLiveTrailing,
       legsPending,
+      legsUnverified,
       overallLegHitRate: decidedLegsTotal > 0 ? +((legsWon / decidedLegsTotal) * 100).toFixed(1) : null,
       standardLegHitRate: stdDecided > 0 ? +((stdWon / stdDecided) * 100).toFixed(1) : null,
       stdWon,
@@ -1532,8 +1329,8 @@ export async function getArenaSnapshot() {
     marketBreakdown,
     tickets,
     allLegs: allLegs.sort((a, b) => {
-      const rank = { WON_EARLY: 0, WON: 1, WINNING_LIVE: 2, TRAILING_LIVE: 3, LOST: 4, PENDING: 5, VOID: 6 };
-      return (rank[a.settlement?.state] ?? 7) - (rank[b.settlement?.state] ?? 7);
+      const rank = { WON_EARLY: 0, WON: 1, WINNING_LIVE: 2, TRAILING_LIVE: 3, LOST: 4, PENDING: 5, VOID: 6, UNVERIFIED: 7 };
+      return (rank[a.settlement?.state] ?? 8) - (rank[b.settlement?.state] ?? 8);
     }),
   };
 }

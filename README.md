@@ -42,17 +42,15 @@ Every cooked or custom ticket runs **exact Poisson-Binomial Dynamic Programming*
 - **🚨 MANDATORY SPORTYBET MAX-FLEX (CUT-3 / CUT-5) + POD SPLIT**: `25–50` game `1M+` & `20M+` Grand Slams — includes one-click **Pod A / Pod B / Pod C / Pod D (`12–13` game sub-slips)** loading in the Slip Centre alongside the full 50-game lotto code.
 
 ### 4. 🥅 High-Accuracy Throws, Goal Kicks, Shots, SOT, Corners & Cards (`#/props`)
-- Dedicated **`#/props` ("Throws, GK & Shots")** hub + full per-match breakdowns (`#/games`) and section filters (`#/picks`):
-  - **Throw-Ins**: Full-Time Over/Under (`33.5`–`39.5`), 1st Half Throw-Ins (`17.5`), Most Throw-Ins `1X2`, plus touchline/pressing tactical rationale.
-  - **Goal Kicks**: Full-Time Over/Under (`14.5`–`17.5`), Home/Away Team Goal Kicks, Most Goal Kicks `1X2`.
+- Dedicated **`#/props` ("Throws, GK & Shots")** hub + full per-match breakdowns (`#/games`) and section filters (`#/picks`) backed strictly by **real live SportyBet Ghana bookable markets** and **real ESPN historical `StatsModel` game-log distributions** (zero synthetic `1X2`-guessed prop formulas):
   - **Shots & Shots on Target (SOT)**: Match & Team Shots O/U, Match & Team SOT O/U, Most Shots `1X2`, Most SOT `1X2` (with live SportyBet Ghana booking).
-  - **Corners, Bookings/Cards, Fouls & Offsides**: Negative-Binomial overdispersed modeling (`r` dispersion parameter) for totals, team lines, and `1X2` supremacy.
+  - **Corners, Bookings/Cards, Fouls, Offsides, Throw-Ins & Goal Kicks**: Negative-Binomial overdispersed modeling (`r` dispersion parameter) for real bookable and historical game-log markets.
 - Strictly filters `#/props` to **high-likelihood, history-vetted selections (`65%–90%+` confidence)** so weak coin-flip props are never surfaced.
 
-### 5. 🧪 Live Cooked Odds & Ticket Verification Arena (`#/arena`)
-- Automatically registers every cooked ticket, `20M+` Mega Multi, Props Sniper, and Correct Score Vault slip prior to kick-off.
-- Syncs live in-play and final scores + match stats (corners, cards, shots, SOT, offsides, fouls) from SportyBet Ghana and ESPN Global Scoreboards.
-- Grades full accumulators, **SportyBet Flex (`Cut-1`, `Cut-2`, `Cut-3`) payouts**, and flat-singles ROI, feeding settled market calibration weights back into the AI Ticket Cooker.
+### 5. 🧪 Live Cooked Odds & Ticket Verification Arena (`#/arena` — Zero Demos / Zero Simulated Backtests)
+- Tracks **only genuine pre-kickoff SportyBet Ghana slips & user-booked slips** (zero seeded demo slips, zero retroactive `verified_backtest` simulations, zero fake starting bankroll).
+- Syncs live in-play and official final scores + match stats across all 6 SportyBet sports via **SportyBet Ghana live feeds**, **official Sportradar post-match feeds**, and **ESPN Global Scoreboards**.
+- Plots a **Real Settled Cumulative Net P&L Curve (`₵0.00` baseline)**, requires official result feeds before settling (`UNVERIFIED` legs never push to false wins), and feeds settled market calibration weights back into the AI Ticket Cooker.
 
 ### 6. 🧠 Self-Learning Brain & Market Integrity Radar (`#/lab` & `#/radar`)
 - **Genetic Algorithm Evolution (`server/brain.js`)** with Champion vs. Challenger holdout validation, learned ensemble trust weights, and Gemini AI mistake post-mortems (`server/lessons.js`).

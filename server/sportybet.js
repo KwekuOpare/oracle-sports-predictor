@@ -502,6 +502,8 @@ export function extractBookableSelections(ev, modelPred = null) {
       espnMatchup: matchTitle,
       home: ev.homeTeamName,
       away: ev.awayTeamName,
+      homeTeamId: ev.homeTeamId || null,
+      awayTeamId: ev.awayTeamId || null,
       homeLogo: ev.homeTeamIcon,
       awayLogo: ev.awayTeamIcon,
       league: ev.tournamentId || 'sporty',
@@ -1237,34 +1239,36 @@ export async function generateSportyBookingCode(items = []) {
     return cached;
   }
 
-  try {
-    const res = await fetch(`${SPORTY_BASE}/orders/share`, {
-      method: 'POST',
-      headers: SPORTY_HEADERS,
-      body: JSON.stringify({ selections: validSelections }),
-      signal: AbortSignal.timeout(10000),
-    });
-    const json = await res.json();
-    if (json.bizCode === 10000 && json.data?.shareCode) {
-      const result = {
-        ok: true,
-        ts: Date.now(),
-        shareCode: json.data.shareCode,
-        shareURL: `https://www.sportybet.com/gh/?shareCode=${json.data.shareCode}`,
-        bookedCount: json.data.outcomes?.length || validSelections.length,
-        requestedCount: items.length,
-        deadline: json.data.deadline,
-      };
-      shareCodeCache.set(fingerprint, result);
-      return result;
+  let lastErr = 'SportyBet rejected the selections.';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 450 + Math.random() * 250));
+      const res = await fetch(`${SPORTY_BASE}/orders/share`, {
+        method: 'POST',
+        headers: SPORTY_HEADERS,
+        body: JSON.stringify({ selections: validSelections }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const json = await res.json();
+      if (json.bizCode === 10000 && json.data?.shareCode) {
+        const result = {
+          ok: true,
+          ts: Date.now(),
+          shareCode: json.data.shareCode,
+          shareURL: `https://www.sportybet.com/gh/?shareCode=${json.data.shareCode}`,
+          bookedCount: json.data.outcomes?.length || validSelections.length,
+          requestedCount: items.length,
+          deadline: json.data.deadline,
+        };
+        shareCodeCache.set(fingerprint, result);
+        return result;
+      }
+      lastErr = json.message || json.innerMsg || lastErr;
+    } catch (err) {
+      lastErr = err.message;
     }
-    return {
-      ok: false,
-      error: json.message || json.innerMsg || 'SportyBet rejected the selections.',
-    };
-  } catch (err) {
-    return { ok: false, error: err.message };
   }
+  return { ok: false, error: lastErr };
 }
 
 /**
